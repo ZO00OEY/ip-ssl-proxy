@@ -1069,17 +1069,17 @@ mode_ip() {
     install_acme
     install_caddy
 
-    # 检查已有证书是否有效（>=30 天则跳过申请流程）
+    # 检查已有证书是否有效（短命证书通常 7 天，用 2 天阈值）
     local acme_dir="${HOME}/.acme.sh/${PUBLIC_IP}_ecc"
     local cert_f="${acme_dir}/fullchain.cer"
     local key_f="${acme_dir}/${PUBLIC_IP}.key"
-    if [[ -f "$cert_f" ]] && [[ -f "$key_f" ]] && openssl x509 -checkend $((30*86400)) -noout -in "$cert_f" 2>/dev/null; then
-        info "有效证书已存在（30 天内无需续期），跳过证书申请"
+    if [[ -f "$cert_f" ]] && [[ -f "$key_f" ]] && openssl x509 -checkend $((2*86400)) -noout -in "$cert_f" 2>/dev/null; then
+        info "有效证书已存在，跳过证书申请"
         CERT_FILE="$cert_f"
         KEY_FILE="$key_f"
     else
         if [[ -f "$cert_f" ]]; then
-            warn "证书即将过期，重新申请..."
+            warn "证书即将过期或已过期，重新申请..."
         fi
         start_temp_caddy
         issue_ip_cert
