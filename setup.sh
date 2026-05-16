@@ -149,22 +149,56 @@ prompt_prefixes() {
     fi
     echo ""
     echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  确认每个服务的端口和子域名前缀                      │${NC}"
-    echo -e "${YELLOW}│  直接回车使用默认值，或输入新前缀                   │${NC}"
+    echo -e "${YELLOW}│  选择要设置子域名的服务                              │${NC}"
+    echo -e "${YELLOW}│  被选中的服务会额外获得 https://前缀.域名 入口      │${NC}"
+    echo -e "${YELLOW}│  编号多选用空格分隔，直接回车跳过则全不设置        │${NC}"
     echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
     echo ""
 
-    local new_services=()
+    local names=() ports=() defaults=() subs=()
+    local index=1
     for svc in "${SERVICES_LIST[@]}"; do
         IFS='|' read -r path h p sub <<< "$svc"
         [[ -z "$h" ]] && h="127.0.0.1"
         local name="${path//\//}"
         local def="${sub:-$name}"
-        echo -n "  ${name} (${p}) 子域名前缀 [${def}]: "
-        read -r prefix </dev/tty 2>/dev/null || true
-        prefix="$(printf '%s' "$prefix" | LC_ALL=C tr -cd 'a-zA-Z0-9')"
-        [[ -n "$prefix" ]] && def="$prefix"
-        new_services+=("/${def}/|${h}|${p}|${def}")
+        names+=("$name"); ports+=("$p"); defaults+=("$def"); subs+=("$sub")
+        echo "  ${index}. ${name} (${p})  默认子域名: ${def}"
+        index=$((index + 1))
+    done
+    echo ""
+    echo -n "  选择编号（多选用空格分隔，直接回车跳过）: "
+    read -r selection </dev/tty 2>/dev/null || true
+    echo ""
+
+    local selected_indices=()
+    for num in $selection; do
+        if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= ${#names[@]} )); then
+            selected_indices+=($((num - 1)))
+        fi
+    done
+
+    local new_services=()
+    for i in "${!names[@]}"; do
+        IFS='|' read -r path h p sub_orig <<< "${SERVICES_LIST[$i]}"
+        [[ -z "$h" ]] && h="127.0.0.1"
+        local def="${defaults[$i]}" name="${names[$i]}" port="${ports[$i]}"
+
+        local matched=false
+        for sel in "${selected_indices[@]}"; do
+            [[ "$sel" -eq "$i" ]] && matched=true && break
+        done
+
+        if $matched; then
+            echo -n "  ${name} (${port}) 子域名前缀 [${def}]: "
+            read -r prefix </dev/tty 2>/dev/null || true
+            prefix="$(printf '%s' "$prefix" | LC_ALL=C tr -cd 'a-zA-Z0-9')"
+            [[ -n "$prefix" ]] && def="$prefix"
+            new_services+=("/${def}/|${h}|${p}|${def}")
+        else
+            # 未选中，保持原始配置不变（保留原有 sub 字段）
+            new_services+=("${SERVICES_LIST[$i]}")
+        fi
     done
     SERVICES_LIST=("${new_services[@]}")
 
