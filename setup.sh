@@ -149,40 +149,61 @@ prompt_prefixes() {
     fi
     echo ""
     echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  为每个服务设置访问前缀                              │${NC}"
-    echo -e "${YELLOW}│  同时用于子路径 (https://IP/前缀/)                   │${NC}"
-    echo -e "${YELLOW}│  和子域名 (https://前缀.你的域名/)                   │${NC}"
-    echo -e "${YELLOW}│  回车使用默认值，输入新值覆盖，输入 q 跳过全部      │${NC}"
+    echo -e "${YELLOW}│  选择需要修改前缀的服务                              │${NC}"
+    echo -e "${YELLOW}│  修改后同时影响子路径和子域名                      │${NC}"
+    echo -e "${YELLOW}│  直接回车跳过，保持所有默认值                      │${NC}"
     echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
     echo ""
 
-    local new_services=()
-    local skip_all=false
+    local names=() ports=() defaults=()
+    local index=1
     for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r path host port sub <<< "$svc"
-        [[ -z "$host" ]] && host="127.0.0.1"
+        IFS='|' read -r path h p sub <<< "$svc"
+        [[ -z "$h" ]] && h="127.0.0.1"
         local name="${path//\//}"
-        local default_prefix="${sub:-$name}"
+        local def="${sub:-$name}"
+        names+=("$name"); ports+=("$p"); defaults+=("$def")
+        echo "  ${index}. ${name} (${p})  默认: ${def}"
+        index=$((index + 1))
+    done
+    echo ""
+    echo -n "  选择编号（多选用空格分隔，直接回车跳过）: "
+    read -r selection </dev/tty 2>/dev/null || true
+    echo ""
 
-        if $skip_all; then
-            new_services+=("$svc")
-            continue
+    # 解析选择的编号
+    local selected_indices=()
+    for num in $selection; do
+        if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= ${#names[@]} )); then
+            selected_indices+=($((num - 1)))
         fi
+    done
 
-        echo -n "  ${name} (${port}) 前缀 [${default_prefix}]: "
-        read -r prefix </dev/tty 2>/dev/null || true
-        local raw_prefix="$prefix"
-        prefix="$(printf '%s' "$prefix" | LC_ALL=C tr -cd 'a-zA-Z0-9')"
+    # 没选任何编号 = 全部用默认值
+    local new_services=()
+    for i in "${!names[@]}"; do
+        IFS='|' read -r path h p sub <<< "${SERVICES_LIST[$i]}"
+        [[ -z "$h" ]] && h="127.0.0.1"
+        local def="${defaults[$i]}"
+        local name="${names[$i]}"
+        local port="${ports[$i]}"
 
-        if [[ "$raw_prefix" == "q" ]] || [[ "$raw_prefix" == "Q" ]]; then
-            skip_all=true
-            new_services+=("$svc")
-            info "已跳过剩余前缀设置"
-        elif [[ -n "$prefix" ]]; then
-            new_services+=("/${prefix}/|${host}|${port}|${prefix}")
-        else
-            new_services+=("/${default_prefix}/|${host}|${port}|${default_prefix}")
+        # 判断当前服务是否被选中
+        local matched=false
+        for sel in "${selected_indices[@]}"; do
+            if [[ "$sel" -eq "$i" ]]; then
+                matched=true
+                break
+            fi
+        done
+
+        if $matched; then
+            echo -n "  ${name} (${port}) 前缀 [${def}]: "
+            read -r prefix </dev/tty 2>/dev/null || true
+            prefix="$(printf '%s' "$prefix" | LC_ALL=C tr -cd 'a-zA-Z0-9')"
+            [[ -n "$prefix" ]] && def="$prefix"
         fi
+        new_services+=("/${def}/|${h}|${p}|${def}")
     done
     SERVICES_LIST=("${new_services[@]}")
 
