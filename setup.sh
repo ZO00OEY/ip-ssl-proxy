@@ -189,8 +189,24 @@ install_acme() {
         info "acme.sh 已安装"
         return
     fi
+
     info "安装 acme.sh ..."
-    curl -fsSL https://get.acme.sh | bash
+
+    # 先试默认 GitHub 源
+    curl -fsSL https://get.acme.sh | bash 2>/dev/null || true
+
+    # 默认源失败（国内服务器常见），切中国镜像
+    if [[ ! -f "$acme_sh" ]]; then
+        warn "默认源安装失败，尝试中国镜像（gitlink）..."
+        CFG_MIRROR=gitlink curl -fsSL https://get.acme.sh | bash 2>/dev/null || true
+    fi
+
+    if [[ ! -f "$acme_sh" ]]; then
+        error "acme.sh 安装失败，请手动安装后重试"
+        error "中国大陆用户参考: https://github.com/acmesh-official/acme.sh/wiki/Install-in-China"
+        exit 1
+    fi
+
     if [[ -f "${HOME}/.acme.sh/acme.sh.env" ]]; then
         set +euo pipefail
         . "${HOME}/.acme.sh/acme.sh.env"
