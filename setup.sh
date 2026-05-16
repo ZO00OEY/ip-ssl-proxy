@@ -471,7 +471,16 @@ start_caddy() {
     local verify_url="${1:-}"
     info "启动 Caddy 服务 ..."
 
+    # 确保日志目录权限正确（Caddy systemd 以 caddy 用户运行）
+    mkdir -p /var/log/caddy
+    if id -u caddy &>/dev/null; then
+        chown caddy:caddy /var/log/caddy 2>/dev/null || true
+    fi
+
     if command -v systemctl &>/dev/null && systemctl cat caddy.service &>/dev/null; then
+        # 先杀手动运行的 Caddy（如果有），避免端口冲突
+        pkill -x caddy 2>/dev/null || true
+        sleep 1
         systemctl enable caddy 2>/dev/null || true
         systemctl restart caddy 2>/dev/null || systemctl start caddy 2>/dev/null || {
             error "systemctl 启动 Caddy 失败，请检查: journalctl -u caddy -n 50"
@@ -1029,17 +1038,30 @@ HTML
 reload_caddy() {
     info "重载 Caddy..."
     local ok=true
-    if command -v systemctl &>/dev/null; then
-        if systemctl is-active caddy &>/dev/null; then
-            systemctl reload caddy 2>&1 || { error "重载失败，尝试重启..."; systemctl restart caddy 2>&1 || { error "重启失败: journalctl -u caddy -n 20"; ok=false; }; }
-        else
-            warn "caddy 服务未在 systemd 中运行，尝试直接启动..."
-            systemctl restart caddy 2>&1 || caddy reload --config /etc/caddy/Caddyfile 2>&1 || { error "启动失败"; ok=false; }
-        fi
-    else
-        caddy reload --config /etc/caddy/Caddyfile 2>&1 || { caddy stop 2>/dev/null; caddy run --config /etc/caddy/Caddyfile 2>&1 & }
+    # 确保日志目录权限正确
+    mkdir -p /var/log/caddy
+    if id -u caddy &>/dev/null; then
+        chown caddy:caddy /var/log/caddy 2>/dev/null || true
     fi
-    $ok && info "完成！"
+
+    if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null; then
+        systemctl reload caddy 2>&1 || systemctl restart caddy 2>&1 || ok=false
+    else
+        if caddy reload --config /etc/caddy/Caddyfile 2>&1; then
+            :
+        else
+            warn "caddy reload 失败，强制重启 Caddy..."
+            pkill -x caddy 2>/dev/null || true
+            sleep 1
+            if command -v systemctl &>/dev/null && systemctl cat caddy.service &>/dev/null 2>&1; then
+                systemctl start caddy 2>&1 || ok=false
+            else
+                nohup caddy run --config /etc/caddy/Caddyfile --adapter caddyfile > /var/log/caddy/caddy.log 2>&1 &
+                sleep 2
+            fi
+        fi
+    fi
+    $ok && info "完成！" || error "Caddy 启动失败，请手动检查"
 }
 
 # ============================================================
