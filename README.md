@@ -1,42 +1,12 @@
-# Caddy + IP SSL 多服务反向代理一键部署
+# Caddy + IP SSL 多服务反向代理
 
-为没有域名的云服务器一键部署 HTTPS 反向代理，通过路径路由将流量分发到多个本地服务。
+给**没有域名**的云服务器一键部署 HTTPS 反向代理，通过路径路由将流量分发到多个本地服务。
 
-## 适用场景
-
-你有一台云服务器，上面跑了多个 Web 服务（比如 CouchDB、SillyTavern、Mihomo 面板等），各自监听在不同端口。你想**不买域名**，直接通过 `https://公网IP/路径` 来 HTTPS 访问这些服务。
-
-## 工作原理
-
-```
-用户 → http://IP          ─┐
-用户 → http://IP/xxx      ─┤──→ Caddy (端口 80) ─→ 301 跳转到 HTTPS
-                            │
-用户 → https://IP/couchdb/ ─┤
-用户 → https://IP/tavern/  ─┤
-用户 → https://IP/mihomo/  ─┼──→ Caddy (端口 443, IP SSL 证书) ─→ 分流到各本地服务
-用户 → https://IP/reader/  ─┤
-用户 → https://IP/hermes/  ─┘
-```
-
-- Caddy **同时监听 80 和 443 端口**
-- **80 端口**：处理 Let's Encrypt 证书验证 + HTTP → HTTPS 自动跳转
-- **443 端口**：HTTPS 加密流量，根据 URL 路径将请求转发到对应的本地端口
-- 你现有的服务**不需要做任何修改**，继续在原端口运行
-- `http://IP:原端口` 依然可以直接访问，不受影响
-
-## 前提条件
-
-- Linux 云服务器（Debian/Ubuntu/CentOS 等）
-- 有**固定公网 IP**
-- 云服务商安全组已**放行 80 和 443 端口**
-- 你的各个后端服务已经在对应端口运行
+支持**可选的域名子域名模式**，解决 SillyTavern 等不支持子路径路由的应用。
 
 ---
 
-## 第一部分：首次安装
-
-**git clone 下载脚本 → 运行**
+## 快速开始
 
 ```bash
 cd ~
@@ -44,135 +14,144 @@ git clone https://github.com/ZO00OEY/ip-ssl-proxy.git
 cd ip-ssl-proxy && bash setup.sh
 ```
 
-脚本会全自动完成：安装依赖 → 申请 IP 证书 → 安装 Caddy → 配置反向代理 → 设置开机自启和证书续期。
+脚本会全自动完成：
 
-整个过程通常 1-3 分钟。
+```
+安装依赖 → 申请 IP 证书 → 安装 Caddy → 配置反代 → 生成导航页 → 开机自启 + 证书续期
+```
+
+整个过程 1-3 分钟。
 
 ---
 
-## 第二部分：安装中断后的恢复
-
-如果上次运行被 `Ctrl+C` 中断，或者脚本中途报错退出，apt 的锁可能没释放，再次运行会卡住。
-
-**清理残留锁文件 → 更新脚本 → 重新运行**
+## 更新脚本
 
 ```bash
-rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock
-dpkg --configure -a
 cd ~/ip-ssl-proxy && git pull && bash setup.sh
 ```
 
-- 前三行：删掉上次中断残留的 apt 锁，释放 dpkg，让包管理器恢复正常
-- `git pull`：拉取脚本最新版本
-- `bash setup.sh`：重新运行
+脚本已安装过的情况下，重新运行会：检查续期证书 → 重新生成配置 → 重启 Caddy。
+
+> 如果上次运行被 Ctrl+C 中断导致 apt 锁残留，先执行：
+> ```bash
+> rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock
+> dpkg --configure -a
+> ```
 
 ---
 
-## 第三部分：子域名访问（可选）
+## 交互流程
 
-如果你有域名，可以启用子域名方式访问，**支持 SillyTavern 这类不支持子路径路由的应用**。
+脚本运行过程会依次：
 
-### 原理
+1. **确认公网 IP** — 自动检测，如果服务器在用 VPN 可能检测错误，可手动修正
+2. **可选输入域名** — 有域名就填，直接回车跳过，仅用 IP 方式访问
+
+两个都是可选步骤，全程回车即使用默认值。
+
+---
+
+## 工作原理
 
 ```
-IP 访问（保留）:                          子域名访问（新增）:
-https://IP/couchdb/  → CouchDB           https://st.你的域名/  → SillyTavern ✅ CSS 正常
-https://IP/tavern/   → SillyTavern (CSS 错乱)
+用户 → http://IP          ─┐
+用户 → http://IP/xxx      ─┤──→ Caddy :80 ─→ 301 跳转 HTTPS
+                            │
+用户 → https://IP/couchdb/ ─┤
+用户 → https://IP/tavern/  ─┤
+用户 → https://IP/mihomo/  ─┼──→ Caddy :443 (IP SSL 证书) ─→ 各本地服务
+用户 → https://IP/reader/  ─┤
+用户 → https://IP/hermes/  ─┘
 ```
 
-子域名下 Caddy **自动签发可信 SSL 证书**，浏览器不报"不安全"。
+- Caddy 同时监听 80（HTTP→HTTPS 跳转）和 443（HTTPS 反代）
+- 你的服务不需要任何修改，原端口依然可直接访问
+
+---
+
+## 子域名访问（有域名时可选）
+
+对于 SillyTavern 这类使用绝对路径导致子路径下 CSS 错乱的应用，可以用子域名方式访问。
 
 ### DNS 配置
 
-在域名管理后台添加 A 记录解析到服务器 IP：
+在域名管理后台添加 A 记录：
 
-| 记录类型 | 主机记录 | 记录值 |
-|---|---|---|
-| A | `@` | `你的服务器IP` |
-| A | `st` | `你的服务器IP` |
-| A | `*` | `你的服务器IP`（泛解析，可选） |
+| 类型 | 主机记录 | 指向 |
+|------|----------|------|
+| A | `st` | 你的服务器 IP |
+| A | `*` | 你的服务器 IP（可选泛解析） |
 
-### 安装
+### 运行脚本
 
 ```bash
-cd ~/ip-ssl-proxy
-git pull
-DOMAIN=你的域名 bash setup.sh
+cd ~/ip-ssl-proxy && git pull && bash setup.sh
 ```
 
-脚本会自动：
+在域名提示处输入 `moyugod.com`，脚本自动：
 - 保留 IP 路径访问不变
-- 为带子域名的服务添加 `https://子域名.你的域名` 入口
-- Caddy 自动为每个子域名申请 SSL 证书（90 天有效期，自动续期）
+- 为带子域名的服务添加 `https://子域名.你的域名/` 入口
+- Caddy 自动签发 SSL 证书并续期
 
-### 默认子域名
-
-| 服务 | 子域名 | 访问地址 |
-|---|---|---|
-| SillyTavern 酒馆 | `st` | `https://st.你的域名/` |
-
-
-验证: 浏览器访问 `https://st.你的域名/`
+默认子域名 `st` 对应 SillyTavern：`https://st.你的域名/`
 
 ---
 
-## 验证部署
-
-浏览器访问 `https://你的公网IP` 能看到服务列表页。
-
-或用 curl 测试：
-
-```bash
-curl -k https://你的公网IP/couchdb/
-curl -k https://你的公网IP/tavern/
-```
-
-> `-k` 是因为 IP 证书不是域名证书，第一次访问浏览器会提示不安全，但通信本身是加密的。
-
-## 默认服务路由
+## 默认服务列表
 
 | 路径 | 目标地址 | 说明 |
-|---|---|---|
-| `/couchdb/` | `127.0.0.1:5984` | Obsidian Livesync (CouchDB) |
-| `/tavern/` | `127.0.0.1:8000` | SillyTavern 酒馆 |
-| `/mihomo/` | `127.0.0.1:9097` | Mihomo 控制面板 |
+|------|----------|------|
+| `/couchdb/` | `127.0.0.1:5984` | Obsidian Livesync |
+| `/tavern/` | `127.0.0.1:8000` | SillyTavern |
+| `/mihomo/` | `127.0.0.1:9097` | Mihomo 面板 |
 | `/reader/` | `127.0.0.1:4396` | 阅读 |
 | `/hermes/` | `127.0.0.1:9119` | Hermes Agent |
 
+---
+
 ## 自定义服务
 
-通过环境变量 `SERVICES` 覆盖默认列表，格式：`"路径|后端IP(可选)|端口"`，多个用逗号分隔。
+通过环境变量覆盖：
 
 ```bash
-cd ~/ip-ssl-proxy
 SERVICES="/app1/|3000,/app2/|192.168.1.10|4000" bash setup.sh
 ```
+
+格式：`"路径|后端IP(可选)|端口"`，逗号分隔。  
+加子域名：`"/app/|端口|sub"`，需配合 `DOMAIN` 环境变量。
+
+---
 
 ## 日常管理
 
 | 操作 | 命令 |
-|---|---|
-| 查看 Caddy 状态 | `systemctl status caddy` |
-| 修改配置后重载 | `systemctl reload caddy` |
-| 查看访问日志 | `tail -f /var/log/caddy/access.log` |
-| 手动续期证书 | `~/.acme.sh/acme.sh --cron` |
+|------|------|
+| 查看状态 | `systemctl status caddy` |
+| 重载配置 | `systemctl reload caddy` |
+| 查看日志 | `tail -f /var/log/caddy/access.log` |
+| 手动续期 | `~/.acme.sh/acme.sh --cron` |
+| 修改导航页 | `vi /var/www/html/index.html` |
 
-证书每天凌晨 3 点自动检查续期，无需手动干预。
+证书每天凌晨 3 点自动检查续期。
 
-## 注意事项
-
-1. **SSL 证书警告**：浏览器访问 IP 证书时显示"不安全"是正常的，因为 IP 证书不属于公开信任体系。通信本身是加密的。
-2. **SillyTavern**：如果页面资源加载异常，需要在 `config.yaml` 中设置 `enableProxy: true`。
-3. **无法访问？** 检查云服务商安全组是否放行了 80 和 443 端口。
-4. **HTTP 跳转**：访问 `http://IP` 会自动 301 跳转到 `https://IP`。
-5. **原始端口仍可直达**：`http://IP:5984`、`http://IP:8000` 等不受 Caddy 影响。
+---
 
 ## 文件位置
 
 | 项目 | 路径 |
-|---|---|
+|------|------|
 | Caddy 配置 | `/etc/caddy/Caddyfile` |
 | SSL 证书 | `~/.acme.sh/你的IP_ecc/fullchain.cer` |
 | SSL 私钥 | `~/.acme.sh/你的IP_ecc/你的IP.key` |
 | 访问日志 | `/var/log/caddy/access.log` |
-| 服务列表页 | `/var/www/html/index.html` |
+| 导航页面 | `/var/www/html/index.html` |
+
+---
+
+## 注意事项
+
+1. **IP 证书安全警告** — 浏览器会提示"不安全"，这是正常的，通信本身加密
+2. **SillyTavern** — 子路径访问需在 `config.yaml` 中设置 `enableProxy: true`
+3. **端口放行** — 云服务商安全组需放行 80 和 443 端口
+4. **HTTP 自动跳转** — `http://IP` 自动 301 到 `https://IP`
+5. **原始端口直达** — `http://IP:原端口` 不受 Caddy 影响
