@@ -568,28 +568,23 @@ configure_caddy() {
 
 CADDYEOF
 
-    # ---- 主域名区块 ----
+    # -------- 端口 443: 同时加载 IP 证书和域名证书（SNI 自动选择）--------
     local acme_home="${HOME}/.acme.sh"
-    if [[ -n "$DOMAIN" ]]; then
-        cat >> "$caddyfile" <<ROUTE
+    local site_addr=":443"
+    [[ -n "$DOMAIN" ]] && site_addr="${DOMAIN}, :443"
 
-# ${DOMAIN} → 导航页
-${DOMAIN} {
-    tls ${acme_home}/${DOMAIN}_ecc/fullchain.cer ${acme_home}/${DOMAIN}_ecc/${DOMAIN}.key
-    root * /var/www/html
-    file_server
-}
-ROUTE
-        info "已添加主域名 ${DOMAIN} → 导航页"
-    fi
-
-    # -------- 端口 443: 证书反向代理（catch-all，使用 IP 证书兜底）--------
     cat >> "$caddyfile" <<ROUTE
 
-:443 {
+${site_addr} {
     tls ${CERT_FILE} ${KEY_FILE}
-
 ROUTE
+
+    # 有域名时添加域名证书
+    if [[ -n "$DOMAIN" ]]; then
+        cat >> "$caddyfile" <<ROUTE
+    tls ${acme_home}/${DOMAIN}_ecc/fullchain.cer ${acme_home}/${DOMAIN}_ecc/${DOMAIN}.key
+ROUTE
+    fi
 
     # 写入每个服务的路由
     for svc in "${SERVICES_LIST[@]}"; do
