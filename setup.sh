@@ -31,10 +31,10 @@ DOMAIN="${DOMAIN:-}"
 PUBLIC_IP="${PUBLIC_IP:-}"
 
 # ---- 颜色 ----
-RED=''
-GREEN=''
-YELLOW=''
-NC=''
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
 
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
@@ -941,12 +941,13 @@ show_menu() {
     echo ""
     echo "  请选择需要的功能:"
     echo ""
-    echo "  1  拉取IP证书"
-    echo "  2  拉取域名证书"
+    echo "  1  拉取IP证书  [二选一]"
+    echo "  2  拉取域名证书  [二选一]"
     echo "  3  添加子域名"
-    echo "  q  退出"
+    echo "  0  退出"
     echo ""
-    echo -n "  请输入 [1/2/3/q]: "
+    echo "----------------------------------------"
+    echo -n "  请输入 [1/2/3/0]: "
 }
 
 # ============================================================
@@ -961,8 +962,8 @@ main() {
         1) mode_ip ;;
         2) mode_domain ;;
         3) mode_subdomain ;;
-        q|Q) info "已退出" ; exit 0 ;;
-        *) error "无效选项，请输入 1、2、3 或 q" ; exit 1 ;;
+        q|Q|0) info "已退出" ; exit 0 ;;
+        *) error "无效选项，请输入 1、2、3 或 0" ; exit 1 ;;
     esac
 }
 
