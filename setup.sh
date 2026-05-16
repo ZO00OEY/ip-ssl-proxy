@@ -469,6 +469,7 @@ ROUTE
     done
 
     cat >> "$caddyfile" <<ROUTE
+    import /etc/caddy/routes-custom.d/*.conf
     handle / {
         root * /var/www/html
         file_server
@@ -534,6 +535,7 @@ ROUTE
     done
 
     cat >> "$caddyfile" <<ROUTE
+    import /etc/caddy/routes-custom.d/*.conf
     handle / {
         root * /var/www/html
         file_server
@@ -656,113 +658,32 @@ print_summary_domain() {
 }
 
 # ============================================================
-# 模式 3: 配对模式（IP + 域名双入口）
+# 模式 3: 添加子路径（交互式添加 handle_path）
 # ============================================================
 mode_paired() {
     check_root
-    detect_os
-    install_deps
-    detect_ip
-    prompt_ip
-    prompt_domain
-    install_acme
-    install_caddy
 
-    # 确保 IP 证书
-    start_temp_caddy
-    issue_ip_cert
-    stop_temp_caddy
+    local custom_dir="/etc/caddy/routes-custom.d"
 
-    # 生成并启动配对配置
-    configure_caddy_paired
-    gen_root_html "https://${DOMAIN}"
-    start_caddy "https://${DOMAIN}"
+    if [[ ! -f /etc/caddy/Caddyfile ]]; then
+        error "未找到 Caddyfile，请先运行模式 1 或模式 2"
+        exit 1
+    fi
 
-    # 交互式添加服务
-    paired_add_services
-}
+    # 确保 Caddyfile 有 import 自定义路由
+    if ! grep -q "routes-custom.d" /etc/caddy/Caddyfile 2>/dev/null; then
+        error "当前 Caddyfile 不支持自定义路由，请重新运行模式 1 或模式 2"
+        exit 1
+    fi
 
-configure_caddy_paired() {
-    local caddyfile="/etc/caddy/Caddyfile"
-    local routes_ip_dir="/etc/caddy/routes-ip.d"
-    local routes_domain_dir="/etc/caddy/routes-domain.d"
-    local sub_dir="/etc/caddy/subdomains.d"
-
-    info "生成 Caddy 配置（配对模式）: ${caddyfile}"
-    mkdir -p /etc/caddy "$routes_ip_dir" "$routes_domain_dir" "$sub_dir"
-
-    cat > "$caddyfile" <<CADDYEOF
-# Caddy + SSL 配对模式 - 由 setup.sh 自动生成
-# IP: ${PUBLIC_IP}  域名: ${DOMAIN}
-
-{
-    admin off
-}
-
-# -------- 端口 80: ACME 验证 --------
-:80 {
-    @acme {
-        path /.well-known/acme-challenge/*
-    }
-    handle @acme {
-        root * /var/www/html
-        file_server
-    }
-    handle {
-        root * /var/www/html
-        file_server
-    }
-}
-
-# -------- IP 证书入口 --------
-${PUBLIC_IP}:443 {
-    tls ${CERT_FILE} ${KEY_FILE}
-
-    import ${routes_ip_dir}/*.conf
-
-    handle / {
-        root * /var/www/html
-        file_server
-    }
-    log {
-        output file /var/log/caddy/access.log {
-            roll_size 50mb
-            roll_keep 3
-        }
-    }
-}
-
-# -------- 域名入口（Caddy 自动签发证书）-------
-${DOMAIN} {
-    import ${routes_domain_dir}/*.conf
-
-    handle / {
-        root * /var/www/html
-        file_server
-    }
-    log {
-        output file /var/log/caddy/access.log {
-            roll_size 50mb
-            roll_keep 3
-        }
-    }
-}
-
-import ${sub_dir}/*.conf
-CADDYEOF
-    info "配对 Caddyfile 已生成"
-}
-
-paired_add_services() {
-    local routes_ip_dir="/etc/caddy/routes-ip.d"
-    local routes_domain_dir="/etc/caddy/routes-domain.d"
-    local sub_dir="/etc/caddy/subdomains.d"
+    mkdir -p "$custom_dir"
 
     echo ""
     echo -e "${YELLOW}-----------------------------------------${NC}"
-    echo -e "${YELLOW}  添加服务（可多次添加，留空名称结束）${NC}"
+    echo -e "${YELLOW}  添加子路径（可多次添加，留空结束）${NC}"
     echo -e "${YELLOW}-----------------------------------------${NC}"
 
+    local added=false
     while true; do
         echo ""
         echo -n "  服务名称（如: sillytavern，留空结束）: "
@@ -773,20 +694,12 @@ paired_add_services() {
         echo -n "  后端端口（如: 8000）: "
         read -r SVC_PORT </dev/tty 2>/dev/null || true
         SVC_PORT="$(printf '%s' "$SVC_PORT" | LC_ALL=C tr -cd '0-9')"
-
         if [[ -z "$SVC_PORT" ]]; then
             error "端口不能为空"
             continue
         fi
 
-        info "添加: /${SVC_NAME}/ → :${SVC_PORT}"
-        echo "  入口:"
-        echo "    https://${PUBLIC_IP}/${SVC_NAME}/"
-        echo "    https://${DOMAIN}/${SVC_NAME}/"
-        echo "    https://${SVC_NAME}.${DOMAIN}/"
-
-        # IP 路径路由
-        cat > "${routes_ip_dir}/${SVC_NAME}.conf" <<ROUTE
+        cat > "${custom_dir}/${SVC_NAME}.conf" <<ROUTE
     handle_path /${SVC_NAME}/* {
         reverse_proxy 127.0.0.1:${SVC_PORT} {
             header_up X-Forwarded-Proto https
@@ -794,41 +707,142 @@ paired_add_services() {
         }
     }
 ROUTE
-
-        # 域名路径路由
-        cp "${routes_ip_dir}/${SVC_NAME}.conf" "${routes_domain_dir}/${SVC_NAME}.conf"
-
-        # 子域名
-        cat > "${sub_dir}/${SVC_NAME}.conf" <<ROUTE
-${SVC_NAME}.${DOMAIN} {
-    reverse_proxy 127.0.0.1:${SVC_PORT} {
-        header_up X-Forwarded-Proto https
-        header_up X-Forwarded-For {remote_host}
-    }
-    log {
-        output file /var/log/caddy/access.log {
-            roll_size 50mb
-            roll_keep 3
-        }
-    }
-}
-ROUTE
-
-        info "${SVC_NAME} 已添加"
+        info "已添加: /${SVC_NAME}/ → :${SVC_PORT}"
+        added=true
     done
 
-    # 重载 Caddy
-    if ls "${routes_ip_dir}"/*.conf &>/dev/null 2>&1 || ls "${sub_dir}"/*.conf &>/dev/null 2>&1; then
-        info "重载 Caddy..."
-        if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null 2>&1; then
-            systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
-        else
-            caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true
-        fi
-        info "配对模式部署完成！"
-    else
-        warn "未添加任何服务，请重新运行模式 3"
+    if [[ "$added" == "false" ]]; then
+        warn "未添加任何服务"
+        return 0
     fi
+
+    # 更新导航页
+    generate_custom_nav
+
+    # 重载 Caddy
+    info "重载 Caddy..."
+    if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null 2>&1; then
+        systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
+    else
+        caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true
+    fi
+    info "完成！"
+}
+
+generate_custom_nav() {
+    local custom_dir="/etc/caddy/routes-custom.d"
+
+    # 检测 base_url
+    local base_url=""
+    if grep -q "域名:" /etc/caddy/Caddyfile 2>/dev/null && [[ -n "$DOMAIN" ]]; then
+        base_url="https://${DOMAIN}"
+    elif grep -q "公网 IP:" /etc/caddy/Caddyfile 2>/dev/null; then
+        base_url="https://${PUBLIC_IP}"
+    else
+        # 从 Caddyfile 提取第一个域名块
+        local extracted
+        extracted=$(grep -oP '^[a-zA-Z0-9.-]+\s*\{' /etc/caddy/Caddyfile 2>/dev/null | head -1 | awk '{print $1}' | tr -d '{')
+        if [[ -n "$extracted" ]]; then
+            base_url="https://${extracted}"
+        else
+            base_url="https://${PUBLIC_IP}"
+        fi
+    fi
+
+    # 从 DEFAULT_SERVICES 和自定义路由构建卡片
+    local -a all_services=()
+    local name port
+
+    # 默认服务
+    for svc in "${DEFAULT_SERVICES[@]}"; do
+        all_services+=("$svc")
+    done
+
+    # 自定义服务
+    for f in "$custom_dir"/*.conf; do
+        [[ -f "$f" ]] || continue
+        name=$(basename "$f" .conf)
+        port=$(grep -oP ':\K\d+' "$f" 2>/dev/null | head -1 || true)
+        [[ -n "$port" ]] && all_services+=("/${name}/|127.0.0.1|${port}|")
+    done
+
+    # 生成 HTML
+    local html="/var/www/html/index.html"
+    mkdir -p /var/www/html
+
+    local cards=""
+    for svc in "${all_services[@]}"; do
+        IFS='|' read -r p h port _ <<< "$svc"
+        name="${p//\//}"
+        [[ -z "$name" ]] && continue
+
+        local note=""
+        if [[ "$port" == "8000" ]]; then
+            name="SillyTavern"
+            note=" <span style=\"color:#f87171;font-size:0.75rem;\">（通过本方式使用酒馆会CSS错乱）</span>"
+        fi
+
+        cards+="        <div class=\"card\">
+          <div class=\"card-title\">${name}${note}</div>
+          <div class=\"card-links\"><a href=\"${base_url}${p}\" class=\"link\">${base_url}${p}</a></div>
+        </div>
+"
+    done
+
+    cat > "$html" <<HTML
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caddy + SSL</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  color: #e2e8f0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+.container { width: 100%; max-width: 560px; }
+.header { text-align: center; margin-bottom: 2.5rem; }
+.header h1 { font-size: 1.5rem; font-weight: 600; color: #f1f5f9; letter-spacing: -0.02em; }
+.cards { display: flex; flex-direction: column; gap: 0.75rem; }
+.card {
+  background: rgba(30, 41, 59, 0.6);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+}
+.card-title {
+  font-size: 0.8rem; font-weight: 500; color: #94a3b8;
+  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;
+}
+.link {
+  font-size: 0.9rem; color: #38bdf8; text-decoration: none; word-break: break-all;
+}
+.link:hover { color: #7dd3fc; }
+.footer {
+  text-align: center; margin-top: 2.5rem; font-size: 0.75rem; color: #475569;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header"><h1>本站导航</h1></div>
+  <div class="cards">${cards}</div>
+  <div class="footer">SSL 加密 &middot; 证书自动续期</div>
+</div>
+</body>
+</html>
+HTML
+    info "导航页已更新"
 }
 
 # ============================================================

@@ -56,7 +56,7 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
 
 1. **IP 证书模式** — 为公网 IP 申请证书，配置纯 IP 反向代理
 2. **域名证书模式** — 为域名申请证书（Caddy 自动签发），配置纯域名反向代理
-3. **配对模式** — 同时配置 IP + 域名双入口，交互式添加服务（名称 + 端口）
+3. **添加子路径** — 在已有配置上交互式添加新服务（名称 + 端口），自动更新导航页
 4. **子域名管理** — 查看已有子域名，添加新的子域名（Caddy 自动签发证书）
 
 模式 1 和 2 为**独立基础模式**（二选一），模式 3 和 4 在此基础上叠加。
@@ -126,7 +126,7 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
 |------|---------|---------|---------------|
 | 1. IP 证书 | acme.sh webroot | crontab 每日 3:00 | `${IP}:443 { tls /path/cert /path/key }` |
 | 2. 域名证书 | Caddy 自动签发 | Caddy 自动续期 | `${DOMAIN} { }`（无 `tls` 指令） |
-| 3. 配对模式 | IP: acme.sh / 域名: Caddy 自动 | crontab + Caddy 自动 | 双 block + import 子目录 |
+| 3. 添加子路径 | 沿用已有模式的证书方式 | 由基础模式决定 | `import /etc/caddy/routes-custom.d/*.conf` |
 | 4. 子域名 | Caddy 自动签发 | Caddy 自动续期 | 独立文件 `/etc/caddy/subdomains.d/*.conf` |
 
 ## 默认服务列表
