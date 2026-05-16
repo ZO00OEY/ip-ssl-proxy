@@ -416,6 +416,14 @@ issue_cert() {
     # 设置续期后重载 Caddy（webroot 模式）
     ${acme_sh} --install-cert -d "${PUBLIC_IP}" \
         --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
+
+    # 清理 acme.sh 中残留的无效域名记录（之前失败的申请留下的）
+    for dir in "${HOME}"/.acme.sh/*_ecc/; do
+        [[ ! -d "$dir" ]] && continue
+        local b="$(basename "$dir")"
+        [[ "$b" == "${PUBLIC_IP}_ecc" ]] && continue
+        rm -rf "$dir" 2>/dev/null || true
+    done
 }
 
 # ---- 生成根页面 HTML ----
