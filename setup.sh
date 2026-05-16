@@ -660,6 +660,7 @@ add_custom_routes() {
             fi
 
             cat > "${custom_dir}/${SVC_NAME}.conf" <<ROUTE
+    redir /${SVC_NAME} /${SVC_NAME}/ 308
     handle_path /${SVC_NAME}/* {
         reverse_proxy 127.0.0.1:${SVC_PORT} {
             header_up X-Forwarded-Proto https
@@ -1019,12 +1020,13 @@ HTML
 
 reload_caddy() {
     info "重载 Caddy..."
+    local ok=true
     if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null; then
-        systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
+        systemctl reload caddy 2>&1 || { error "重载失败，尝试重启..."; systemctl restart caddy 2>&1 || { error "重启也失败了，请手动检查: journalctl -u caddy -n 20"; ok=false; }; }
     else
-        caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true
+        caddy reload --config /etc/caddy/Caddyfile 2>&1 || { error "重载失败"; ok=false; }
     fi
-    info "完成！"
+    $ok && info "完成！"
 }
 
 # ============================================================
