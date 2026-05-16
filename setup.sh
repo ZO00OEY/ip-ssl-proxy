@@ -330,9 +330,10 @@ issue_ip_cert() {
             --force || {
                 stop_temp_caddy
                 error "证书申请失败，常见原因："
-                error "1. 端口 80 被防火墙阻挡（安全组/iptables 需放行）"
-                error "2. 公网 IP ${PUBLIC_IP} 并非本机公网 IP"
-                error "3. /var/www/html 目录不可写"
+                error "1. Let's Encrypt 频率限制（同一 IP 7 天内最多 5 次）"
+                error "2. 端口 80 被防火墙阻挡（安全组/iptables 需放行）"
+                error "3. 公网 IP ${PUBLIC_IP} 并非本机公网 IP"
+                error "4. /var/www/html 目录不可写"
                 exit 1
             }
         info "证书申请成功！"
