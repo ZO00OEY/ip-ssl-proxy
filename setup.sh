@@ -603,13 +603,34 @@ add_custom_routes() {
         echo "    /${n}/ → :${p}"
     done
 
-    local added=false
+    local changed=false
     while true; do
         echo ""
-        echo -n "  服务名称（如: myapp，留空结束）: "
+        echo -n "  服务名称（如: myapp，!名称 删除，留空结束）: "
         read -r SVC_NAME </dev/tty 2>/dev/null || true
-        SVC_NAME="$(printf '%s' "$SVC_NAME" | LC_ALL=C tr -cd 'a-zA-Z0-9_-')"
         [[ -z "$SVC_NAME" ]] && break
+
+        # 删除操作
+        if [[ "$SVC_NAME" == !* ]]; then
+            local del_name="${SVC_NAME#!}"
+            del_name="$(printf '%s' "$del_name" | LC_ALL=C tr -cd 'a-zA-Z0-9_-')"
+            if [[ -z "$del_name" ]]; then
+                error "请指定要删除的服务名称，如 !myapp"
+                continue
+            fi
+            if [[ -f "${custom_dir}/${del_name}.conf" ]]; then
+                rm "${custom_dir}/${del_name}.conf"
+                info "已删除: /${del_name}/"
+                changed=true
+            else
+                error "服务 /${del_name}/ 不存在"
+            fi
+            continue
+        fi
+
+        # 添加操作
+        SVC_NAME="$(printf '%s' "$SVC_NAME" | LC_ALL=C tr -cd 'a-zA-Z0-9_-')"
+        [[ -z "$SVC_NAME" ]] && { error "服务名称不能为空"; continue; }
 
         echo -n "  后端端口（如: 3000）: "
         read -r SVC_PORT </dev/tty 2>/dev/null || true
@@ -628,10 +649,10 @@ add_custom_routes() {
     }
 ROUTE
         info "已添加: https://${PUBLIC_IP}/${SVC_NAME}/ → :${SVC_PORT}"
-        added=true
+        changed=true
     done
 
-    [[ "$added" == "false" ]] && { warn "未添加任何服务"; return 0; }
+    [[ "$changed" == "false" ]] && { warn "未做任何更改"; return 0; }
 
     rebuild_nav_ip
     reload_caddy
@@ -702,13 +723,34 @@ add_custom_subdomains() {
         echo "    ${n}.${DOMAIN} → :${p}"
     done
 
-    local added=false
+    local changed=false
     while true; do
         echo ""
-        echo -n "  子域名前缀（如: st → ${DOMAIN} 的 st.${DOMAIN}，留空结束）: "
+        echo -n "  子域名前缀（如: st，!前缀 删除，留空结束）: "
         read -r SUB_PREFIX </dev/tty 2>/dev/null || true
-        SUB_PREFIX="$(printf '%s' "$SUB_PREFIX" | LC_ALL=C tr -cd 'a-zA-Z0-9-')"
         [[ -z "$SUB_PREFIX" ]] && break
+
+        # 删除操作
+        if [[ "$SUB_PREFIX" == !* ]]; then
+            local del_name="${SUB_PREFIX#!}"
+            del_name="$(printf '%s' "$del_name" | LC_ALL=C tr -cd 'a-zA-Z0-9-')"
+            if [[ -z "$del_name" ]]; then
+                error "请指定要删除的子域名前缀，如 !st"
+                continue
+            fi
+            if [[ -f "${sub_dir}/${del_name}.conf" ]]; then
+                rm "${sub_dir}/${del_name}.conf"
+                info "已删除: ${del_name}.${DOMAIN}"
+                changed=true
+            else
+                error "子域名 ${del_name}.${DOMAIN} 不存在"
+            fi
+            continue
+        fi
+
+        # 添加操作
+        SUB_PREFIX="$(printf '%s' "$SUB_PREFIX" | LC_ALL=C tr -cd 'a-zA-Z0-9-')"
+        [[ -z "$SUB_PREFIX" ]] && { error "子域名前缀不能为空"; continue; }
 
         echo -n "  后端端口（如: 8000）: "
         read -r SUB_PORT </dev/tty 2>/dev/null || true
@@ -741,10 +783,10 @@ ${sub_domain} {
 }
 ROUTE
         info "已添加: https://${sub_domain}/ → :${SUB_PORT}"
-        added=true
+        changed=true
     done
 
-    [[ "$added" == "false" ]] && { warn "未添加任何子域名"; return 0; }
+    [[ "$changed" == "false" ]] && { warn "未做任何更改"; return 0; }
 
     rebuild_nav_domain "$domain"
     reload_caddy
