@@ -1092,6 +1092,7 @@ reload_caddy() {
 mode_ip() {
     check_root
     parse_services
+    mkdir -p /etc/caddy
     printf '%s\n' "${SERVICES_LIST[@]}" > /etc/caddy/.services.conf
     detect_os
     install_deps
@@ -1130,6 +1131,7 @@ mode_ip() {
 mode_domain() {
     check_root
     parse_services
+    mkdir -p /etc/caddy
     printf '%s\n' "${SERVICES_LIST[@]}" > /etc/caddy/.services.conf
     detect_os
     install_deps
