@@ -378,6 +378,11 @@ issue_cert() {
     CERT_FILE="${cert_dir}/fullchain.cer"
     KEY_FILE="${cert_dir}/${PUBLIC_IP}.key"
 
+    echo ""
+    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}│  IP 证书（acme.sh）                                │${NC}"
+    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+
     mkdir -p /var/www/html
 
     # 清理 acme.sh 中非 IP 证书的残留记录（已改用 Caddy 自动 SSL 处理域名）
@@ -734,6 +739,7 @@ check_domain_certs() {
     echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
     echo -e "${YELLOW}│  验证域名 SSL 证书...                               │${NC}"
     echo -e "${YELLOW}│  Caddy 正在自动为域名申请 Let's Encrypt 证书        │${NC}"
+    echo -e "${YELLOW}│  等待最长时间约 15 秒                                │${NC}"
     echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
 
     local domains_to_check=("${DOMAIN}")
@@ -745,33 +751,47 @@ check_domain_certs() {
     local all_ok=true
     for domain in "${domains_to_check[@]}"; do
         echo -n "  https://${domain}/  ...  "
-        local code=""
+        local ssl_ok=false
         local attempt=0
-        while [[ $attempt -lt 4 ]]; do
+        while [[ $attempt -lt 5 ]]; do
+            # 检查证书是否有效（不使用 -k，只有合法证书才通过）
+            local code
             code=$(curl -o /dev/null -s -w "%{http_code}" "https://${domain}/" \
-                --connect-timeout 5 --max-time 8 2>/dev/null || echo "000")
-            [[ "$code" != "000" ]] && break
+                --connect-timeout 5 --max-time 8 2>/dev/null)
+            if [[ "$code" =~ ^[0-9]{3}$ ]] && [[ "$code" != "000" ]]; then
+                ssl_ok=true
+                echo -e "${GREEN}OK (${code})${NC}"
+                break
+            fi
             attempt=$((attempt + 1))
-            [[ $attempt -lt 4 ]] && sleep 3
+            [[ $attempt -lt 5 ]] && sleep 3
         done
-        if [[ "$code" != "000" ]]; then
-            echo -e "${GREEN}OK (${code})${NC}"
-        else
-            echo -e "${RED}未就绪${NC}"
+
+        if ! $ssl_ok; then
+            # 用 -k 再试一次，区分"服务器没响应"还是"证书无效"
+            local insecure_code
+            insecure_code=$(curl -o /dev/null -s -w "%{http_code}" "https://${domain}/" \
+                -k --connect-timeout 5 --max-time 8 2>/dev/null)
+            if [[ "$insecure_code" =~ ^[0-9]{3}$ ]] && [[ "$insecure_code" != "000" ]]; then
+                echo -e "${RED}证书无效${NC}（服务器有响应但证书不匹配）"
+            else
+                echo -e "${RED}无法连接${NC}"
+            fi
             all_ok=false
         fi
     done
 
+    echo ""
     if $all_ok; then
-        echo ""
         info "域名 SSL 证书全部就绪"
     else
-        echo ""
         warn "部分域名证书尚未就绪，Caddy 后台仍在申请中"
-        warn "稍后可用以下命令检查:"
+        warn "等 1-2 分钟后可以用下面命令检查证书状态:"
         for domain in "${domains_to_check[@]}"; do
-            echo "    curl -I https://${domain}/"
+            echo "    echo | openssl s_client -connect ${domain}:443 -servername ${domain} 2>/dev/null | openssl x509 -noout -subject"
         done
+        warn "查看 Caddy 证书申请日志:"
+        echo "    journalctl -u caddy --since '5 min ago' --no-pager | grep -iE 'cert|acme|challenge'"
     fi
 }
 
@@ -858,6 +878,10 @@ main() {
     gen_root_html
     configure_caddy
     setup_cron_renew
+    echo ""
+    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}│  域名 SSL 证书（Caddy 自动 SSL）                    │${NC}"
+    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
     start_caddy
     check_domain_certs
     print_summary
