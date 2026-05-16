@@ -593,17 +593,30 @@ add_custom_routes() {
 
     echo ""
     echo -e "${YELLOW}-----------------------------------------${NC}"
-    echo -e "${YELLOW}  当前模式: IP — 添加子路径${NC}"
+    echo -e "${YELLOW}  当前模式: IP — 添加/删除子路径${NC}"
     echo -e "${YELLOW}-----------------------------------------${NC}"
 
-    # 列出已有的
-    local has_existing=false
+    # 列出全部可用服务（预配置 + 自定义）
+    echo ""
+    echo "  可用服务:"
+    local -a all_services=()
+    if [[ -f /etc/caddy/.services.conf ]]; then
+        mapfile -t all_services < /etc/caddy/.services.conf
+    else
+        all_services=("${DEFAULT_SERVICES[@]}")
+    fi
+    for svc in "${all_services[@]}"; do
+        IFS='|' read -r p h port _ <<< "$svc"
+        [[ -z "$h" ]] && h="127.0.0.1"
+        local name="${p//\//}"
+        [[ -z "$name" ]] && continue
+        echo "    ${p} → ${h}:${port}"
+    done
     for f in "$custom_dir"/*.conf; do
         [[ -f "$f" ]] || continue
-        [[ "$has_existing" == "false" ]] && echo "  已有子路径:" && has_existing=true
         local n; n=$(basename "$f" .conf)
         local p; p=$(grep -oP ':\K\d+' "$f" 2>/dev/null | head -1 || echo "?")
-        echo "    /${n}/ → :${p}"
+        [[ -n "$p" ]] && echo "    /${n}/ → 127.0.0.1:${p} [自定义]"
     done
 
     local changed=false
@@ -713,17 +726,32 @@ add_custom_subdomains() {
 
     echo ""
     echo -e "${YELLOW}-----------------------------------------${NC}"
-    echo -e "${YELLOW}  当前模式: 域名 — 添加子域名${NC}"
+    echo -e "${YELLOW}  当前模式: 域名 — 添加/删除子域名${NC}"
     echo -e "${YELLOW}-----------------------------------------${NC}"
 
-    # 列出已有的
-    local has_existing=false
+    # 列出全部可用服务（路径 + 子域名）
+    echo ""
+    echo "  可用服务:"
+    local -a all_services=()
+    if [[ -f /etc/caddy/.services.conf ]]; then
+        mapfile -t all_services < /etc/caddy/.services.conf
+    else
+        for svc in "${DEFAULT_SERVICES[@]}"; do
+            all_services+=("$svc")
+        done
+    fi
+    for svc in "${all_services[@]}"; do
+        IFS='|' read -r p h port _ <<< "$svc"
+        [[ -z "$h" ]] && h="127.0.0.1"
+        local name="${p//\//}"
+        [[ -z "$name" ]] && continue
+        echo "    https://${DOMAIN}${p} → ${h}:${port}"
+    done
     for f in "$sub_dir"/*.conf; do
         [[ -f "$f" ]] || continue
-        [[ "$has_existing" == "false" ]] && echo "  已有子域名:" && has_existing=true
         local n; n=$(basename "$f" .conf)
         local p; p=$(grep -oP ':\K\d+' "$f" 2>/dev/null | head -1 || echo "?")
-        echo "    ${n}.${DOMAIN} → :${p}"
+        [[ -n "$p" ]] && echo "    ${n}.${DOMAIN} → :${p} [自定义]"
     done
 
     local changed=false
@@ -999,7 +1027,7 @@ mode_domain() {
 show_menu() {
     echo ""
     echo "========================================"
-    echo "  Caddy + SSL 多服务反向代理"
+    echo -e "${YELLOW}  Caddy + SSL 多服务反向代理${NC}"
     echo "========================================"
     echo ""
     echo "  请选择需要的功能:"
