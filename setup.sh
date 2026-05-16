@@ -391,9 +391,15 @@ CADDYEOF
 
 # -------- 端口 80: ACME 验证 --------
 :80 {
-    @acme { path /.well-known/acme-challenge/* }
-    handle @acme { root * /var/www/html; file_server }
-    handle { root * /var/www/html; file_server }
+    @acme path /.well-known/acme-challenge/*
+    handle @acme {
+        root * /var/www/html
+        file_server
+    }
+    handle {
+        root * /var/www/html
+        file_server
+    }
 }
 
 # -------- ${section_title} --------
