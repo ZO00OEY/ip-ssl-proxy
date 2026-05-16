@@ -158,7 +158,7 @@ install_caddy() {
     case "${OS_ID}" in
         ubuntu|debian)
             info "通过 apt 安装 Caddy ..."
-            apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https 2>/dev/null || true
+            apt-get install -y -qq debian-archive-keyring apt-transport-https 2>/dev/null || true
             curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' 2>/dev/null | \
                 gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null || true
             curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' 2>/dev/null | \
