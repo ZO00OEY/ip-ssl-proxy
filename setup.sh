@@ -385,14 +385,6 @@ issue_cert() {
 
     mkdir -p /var/www/html
 
-    # 清理 acme.sh 中非 IP 证书的残留记录（已改用 Caddy 自动 SSL 处理域名）
-    for dir in "${HOME}"/.acme.sh/*_ecc/; do
-        [[ ! -d "$dir" ]] && continue
-        local b="$(basename "$dir")"
-        [[ "$b" == "${PUBLIC_IP}_ecc" ]] && continue
-        rm -rf "$dir" 2>/dev/null || true
-    done
-
     if [[ -f "$CERT_FILE" ]] && [[ -f "$KEY_FILE" ]]; then
         info "证书已存在，检查续期 ..."
         ${acme_sh} --cron -d "${PUBLIC_IP}" 2>/dev/null || true
@@ -421,6 +413,51 @@ issue_cert() {
     # 设置续期后重载 Caddy（webroot 模式）
     ${acme_sh} --install-cert -d "${PUBLIC_IP}" \
         --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
+}
+
+# ---- 申请域名证书（acme.sh webroot 模式）----
+issue_domain_certs() {
+    [[ -z "$DOMAIN" ]] && return
+    local acme_sh="${HOME}/.acme.sh/acme.sh"
+    local domains=()
+    for svc in "${SERVICES_LIST[@]}"; do
+        IFS='|' read -r _ _ _ sub <<< "$svc"
+        [[ -n "$sub" ]] && domains+=("${sub}.${DOMAIN}")
+    done
+    # 主域名放最后签发（SAN 包含子域名）
+    [[ -n "$DOMAIN" ]] && domains+=("${DOMAIN}")
+
+    echo ""
+    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}│  域名证书（acme.sh webroot 模式）                    │${NC}"
+    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+
+    local issued_any=false
+    for domain in "${domains[@]}"; do
+        local cert_dir="${HOME}/.acme.sh/${domain}_ecc"
+        local cert_file="${cert_dir}/fullchain.cer"
+        local key_file="${cert_dir}/${domain}.key"
+
+        if [[ -f "$cert_file" ]] && [[ -f "$key_file" ]]; then
+            info "域名证书已存在: ${domain}"
+            continue
+        fi
+
+        info "申请域名证书: ${domain}"
+        ${acme_sh} --issue --server letsencrypt -d "${domain}" \
+            --webroot /var/www/html --force 2>/dev/null && {
+            info "${domain} 证书申请成功"
+            issued_any=true
+        } || {
+            warn "${domain} 证书申请失败，常见原因："
+            warn "1. 域名 ${domain} 的 DNS 未指向本机 IP ${PUBLIC_IP}"
+            warn "2. 端口 80 被防火墙/安全组阻挡"
+        }
+    done
+    if $issued_any; then
+        echo ""
+        info "域名证书已全部就绪"
+    fi
 }
 
 # ---- 生成根页面 HTML ----
@@ -610,7 +647,8 @@ configure_caddy() {
 CADDYEOF
 
     # ---- 子域名区块（如果设置了 DOMAIN）----
-    # 放在 IP 区块之前，确保 SNI 匹配时优先使用域名的自动 SSL 证书
+    # 使用 acme.sh 签发的证书，通过 tls 指令明确指定
+    local acme_home="${HOME}/.acme.sh"
     if [[ -n "$DOMAIN" ]]; then
         for svc in "${SERVICES_LIST[@]}"; do
             IFS='|' read -r path host port sub <<< "$svc"
@@ -622,6 +660,7 @@ CADDYEOF
 
 # ${subdomain} → ${host}:${port}
 ${subdomain} {
+    tls ${acme_home}/${subdomain}_ecc/fullchain.cer ${acme_home}/${subdomain}_ecc/${subdomain}.key
     reverse_proxy ${host}:${port} {
         header_up X-Forwarded-Proto https
         header_up X-Forwarded-For {remote_host}
@@ -634,13 +673,14 @@ ROUTE
 
 # ${DOMAIN} → 导航页
 ${DOMAIN} {
+    tls ${acme_home}/${DOMAIN}_ecc/fullchain.cer ${acme_home}/${DOMAIN}_ecc/${DOMAIN}.key
     root * /var/www/html
     file_server
 }
 ROUTE
     fi
 
-    # 统计子域名数量
+    # 统计子域名数量并添加 tls 指令
     local sub_count=0
     if [[ -n "$DOMAIN" ]]; then
         for svc in "${SERVICES_LIST[@]}"; do
@@ -650,10 +690,10 @@ ROUTE
         info "已添加子域名路由（共 ${sub_count} 个），主域名 ${DOMAIN} → 导航页"
     fi
 
-    # -------- IP 证书区块（仅监听 ${PUBLIC_IP}）--------
+    # -------- 端口 443: 证书反向代理（catch-all，使用 IP 证书兜底）--------
     cat >> "$caddyfile" <<ROUTE
 
-${PUBLIC_IP}:443 {
+:443 {
     tls ${CERT_FILE} ${KEY_FILE}
 
 ROUTE
@@ -730,24 +770,23 @@ start_caddy() {
     # 验证
     sleep 2
     local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" "https://${PUBLIC_IP}" --insecure --max-time 5 2>/dev/null || echo "000")
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" "https://${PUBLIC_IP}" --insecure --max-time 5 2>/dev/null)
+    http_code="${http_code%%[[:space:]]*}"
 
-    if [[ "$http_code" != "000" ]]; then
+    if [[ "$http_code" =~ ^[0-9]{3}$ ]] && [[ "$http_code" != "000" ]]; then
         info "Caddy 启动成功，HTTPS 根页面响应码: ${http_code}"
     else
         warn "Caddy 已启动但 HTTPS 暂时无响应，请稍后检查: curl -k https://${PUBLIC_IP}"
     fi
 }
 
-# ---- 检查域名 SSL 证书（Caddy 自动签发后验证） ----
+# ---- 检查域名 SSL 证书（验证 acme.sh 签发文件） ----
 check_domain_certs() {
     [[ -z "$DOMAIN" ]] && return
 
     echo ""
     echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
     echo -e "${YELLOW}│  验证域名 SSL 证书...                               │${NC}"
-    echo -e "${YELLOW}│  Caddy 正在自动为域名申请 Let's Encrypt 证书        │${NC}"
-    echo -e "${YELLOW}│  等待最长时间约 15 秒                                │${NC}"
     echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
 
     local domains_to_check=("${DOMAIN}")
@@ -758,48 +797,35 @@ check_domain_certs() {
 
     local all_ok=true
     for domain in "${domains_to_check[@]}"; do
-        echo -n "  https://${domain}/  ...  "
-        local ssl_ok=false
-        local attempt=0
-        while [[ $attempt -lt 5 ]]; do
-            # 检查证书是否有效（不使用 -k，只有合法证书才通过）
-            local code
-            code=$(curl -o /dev/null -s -w "%{http_code}" "https://${domain}/" \
-                --connect-timeout 5 --max-time 8 2>/dev/null)
-            if [[ "$code" =~ ^[0-9]{3}$ ]] && [[ "$code" != "000" ]]; then
-                ssl_ok=true
-                echo -e "${GREEN}OK (${code})${NC}"
-                break
-            fi
-            attempt=$((attempt + 1))
-            [[ $attempt -lt 5 ]] && sleep 3
-        done
+        local cert_file="${HOME}/.acme.sh/${domain}_ecc/fullchain.cer"
+        local key_file="${HOME}/.acme.sh/${domain}_ecc/${domain}.key"
+        echo -n "  ${domain}  ...  "
 
-        if ! $ssl_ok; then
-            # 用 -k 再试一次，区分"服务器没响应"还是"证书无效"
-            local insecure_code
-            insecure_code=$(curl -o /dev/null -s -w "%{http_code}" "https://${domain}/" \
-                -k --connect-timeout 5 --max-time 8 2>/dev/null)
-            if [[ "$insecure_code" =~ ^[0-9]{3}$ ]] && [[ "$insecure_code" != "000" ]]; then
-                echo -e "${RED}证书无效${NC}（服务器有响应但证书不匹配）"
+        if [[ -f "$cert_file" ]] && [[ -f "$key_file" ]]; then
+            local expiry
+            expiry=$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | cut -d= -f2)
+            local now_epoch
+            now_epoch=$(date +%s)
+            local expiry_epoch
+            expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
+            if [[ -n "$expiry" ]] && [[ "$expiry_epoch" -gt "$now_epoch" ]]; then
+                local days_left=$(( (expiry_epoch - now_epoch) / 86400 ))
+                echo -e "${GREEN}有效${NC}（${days_left} 天后到期）"
             else
-                echo -e "${RED}无法连接${NC}"
+                echo -e "${RED}已过期${NC}"
+                all_ok=false
             fi
+        else
+            echo -e "${RED}证书文件缺失${NC}"
             all_ok=false
         fi
     done
 
     echo ""
     if $all_ok; then
-        info "域名 SSL 证书全部就绪"
+        info "域名 SSL 证书全部有效"
     else
-        warn "部分域名证书尚未就绪，Caddy 后台仍在申请中"
-        warn "等 1-2 分钟后可以用下面命令检查证书状态:"
-        for domain in "${domains_to_check[@]}"; do
-            echo "    echo | openssl s_client -connect ${domain}:443 -servername ${domain} 2>/dev/null | openssl x509 -noout -subject"
-        done
-        warn "查看 Caddy 证书申请日志:"
-        echo "    journalctl -u caddy --since '5 min ago' --no-pager | grep -iE 'cert|acme|challenge'"
+        warn "部分域名证书存在问题，请检查 acme.sh 日志"
     fi
 }
 
@@ -837,7 +863,7 @@ print_summary() {
     echo ""
     if [[ -n "$DOMAIN" ]]; then
         echo -e "  ${GREEN}域名访问已启用！${NC}"
-        echo "  Caddy 自动 SSL 证书续期（内建，无需额外配置）"
+        echo "  证书续期: acme.sh 每日 3:00 自动检查"
         echo ""
     fi
     echo "  Caddy 配置:   /etc/caddy/Caddyfile"
@@ -881,6 +907,12 @@ main() {
     # 后续运行：证书已存在，直接检查续期
     start_temp_caddy
     issue_cert
+
+    # 如果设置了域名，在临时 Caddy 还在运行时申请域名证书
+    if [[ -n "$DOMAIN" ]]; then
+        issue_domain_certs
+    fi
+
     stop_temp_caddy
 
     gen_root_html
