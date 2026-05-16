@@ -117,7 +117,7 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
 | 路径（默认） | 路径（设域名后） | 目标地址 | 说明 |
 |------|------|----------|------|
 | `/couchdb/` | `/couchdb/` | `127.0.0.1:5984` | Obsidian Livesync |
-| `/sillytavern/` | `/sillytavern/` | `127.0.0.1:8000` | SillyTavern |
+| `/sillytavern/` | `/st/` | `127.0.0.1:8000` | SillyTavern |
 | `/mihomo/` | `/mihomo/` | `127.0.0.1:9097` | Mihomo 面板 |
 | `/reader/` | `/reader/` | `127.0.0.1:4396` | 阅读 |
 | `/hermes/` | `/hermes/` | `127.0.0.1:9119` | Hermes Agent |
