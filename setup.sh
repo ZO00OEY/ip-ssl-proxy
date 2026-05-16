@@ -465,6 +465,7 @@ ROUTE
 }
 ROUTE
     info "Caddy 配置已生成，共 ${#SERVICES_LIST[@]} 个服务路由"
+    caddy fmt --overwrite "$caddyfile" 2>/dev/null || true
 }
 
 # ---- 证书续期 cron（仅 IP）----
