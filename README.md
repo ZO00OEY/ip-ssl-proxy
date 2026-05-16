@@ -1,8 +1,11 @@
 # Caddy + IP SSL 多服务反向代理
 
-给**没有域名**的云服务器一键部署 HTTPS 反向代理，通过路径路由将流量分发到多个本地服务。
+给**没有域名**的云服务器一键部署 HTTPS 反向代理，通过子路径路由将流量分发到多个本地服务。可选输入域名启用子域名模式，解决不支持子路径路由的应用。
 
-支持**可选的域名子域名模式**，解决 SillyTavern 等不支持子路径路由的应用。
+两种使用方式：
+
+- **子路径访问**（无需域名、无需 ICP 备案）：`https://IP/couchdb/` → 后端服务。适用于 Obsidian Livesync 等支持子路径配置的应用
+- **子域名访问**（需要域名）：`https://st.你的域名/` → SillyTavern。适用于使用绝对路径导致 CSS 错乱的应用
 
 ---
 
@@ -46,26 +49,38 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
 
 1. **确认公网 IP** — 自动检测，如果服务器在用 VPN 可能检测错误，可手动修正
 2. **可选输入域名** — 有域名就填，直接回车跳过，仅用 IP 方式访问
+3. **分配访问前缀**（有域名时）— 为每个服务设置前缀，同时作为子路径 `/前缀/` 和子域名 `https://前缀.你的域名/`
 
-两个都是可选步骤，全程回车即使用默认值。
+三个都是可选步骤，全程回车即使用默认值。
 
 ---
 
 ## 工作原理
 
+### 子路径访问（无需域名）
+
+无需备案，通过 HTTPS 子路径直达后端。适合 Obsidian Livesync、Mihomo 面板等支持子路径配置的应用。
+
 ```
-用户 → http://IP          ─┐
-用户 → http://IP/xxx      ─┤──→ Caddy :80 ─→ 301 跳转 HTTPS
-                            │
-用户 → https://IP/couchdb/ ─┤
-用户 → https://IP/tavern/  ─┤
-用户 → https://IP/mihomo/  ─┼──→ Caddy :443 (IP SSL 证书) ─→ 各本地服务
-用户 → https://IP/reader/  ─┤
-用户 → https://IP/hermes/  ─┘
+https://IP/couchdb/  →  CouchDB (5984)
+https://IP/st/       →  SillyTavern (8000)
+https://IP/mihomo/   →  Mihomo 面板 (9097)
+https://IP/reader/   →  阅读 (4396)
+https://IP/hermes/   →  Hermes Agent (9119)
 ```
 
-- Caddy 同时监听 80（HTTP→HTTPS 跳转）和 443（HTTPS 反代）
-- 你的服务不需要任何修改，原端口依然可直接访问
+Caddy 同时监听 80（HTTP→HTTPS 自动跳转）和 443（IP SSL 加密 + 反向代理）。
+
+### 子域名访问（需域名）
+
+当应用使用绝对路径（如 SillyTavern 的 `/js/script.js`），子路径下 CSS/JS 会加载失败。子域名方式可以解决：
+
+```
+https://st.你的域名/  →  SillyTavern ✅ 一切正常
+https://IP/st/       →  SillyTavern ❌ CSS 错乱（但仍可用）
+```
+
+配置 DNS A 记录后，Caddy 自动为子域名签发可信 SSL 证书，浏览器不再报"不安全"。
 
 ---
 
@@ -99,13 +114,15 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
 
 ## 默认服务列表
 
-| 路径 | 目标地址 | 说明 |
-|------|----------|------|
-| `/couchdb/` | `127.0.0.1:5984` | Obsidian Livesync |
-| `/tavern/` | `127.0.0.1:8000` | SillyTavern |
-| `/mihomo/` | `127.0.0.1:9097` | Mihomo 面板 |
-| `/reader/` | `127.0.0.1:4396` | 阅读 |
-| `/hermes/` | `127.0.0.1:9119` | Hermes Agent |
+| 路径（默认） | 路径（设域名后） | 目标地址 | 说明 |
+|------|------|----------|------|
+| `/couchdb/` | `/couchdb/` | `127.0.0.1:5984` | Obsidian Livesync |
+| `/tavern/` | `/st/` | `127.0.0.1:8000` | SillyTavern |
+| `/mihomo/` | `/mihomo/` | `127.0.0.1:9097` | Mihomo 面板 |
+| `/reader/` | `/reader/` | `127.0.0.1:4396` | 阅读 |
+| `/hermes/` | `/hermes/` | `127.0.0.1:9119` | Hermes Agent |
+
+> 设域名后，每个服务的访问前缀（子路径和子域名）可在交互中自定义。
 
 ---
 
@@ -117,8 +134,7 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
 SERVICES="/app1/|3000,/app2/|192.168.1.10|4000" bash setup.sh
 ```
 
-格式：`"路径|后端IP(可选)|端口"`，逗号分隔。  
-加子域名：`"/app/|端口|sub"`，需配合 `DOMAIN` 环境变量。
+格式：`"路径|后端IP(可选)|端口|子域名前缀(可选)"`，逗号分隔。
 
 ---
 

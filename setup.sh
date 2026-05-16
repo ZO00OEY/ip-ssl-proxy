@@ -143,6 +143,42 @@ prompt_ip() {
     fi
 }
 
+prompt_prefixes() {
+    if [[ -z "$DOMAIN" ]]; then
+        return
+    fi
+    echo ""
+    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}│  为每个服务设置访问前缀                              │${NC}"
+    echo -e "${YELLOW}│  同时用于子路径 (https://IP/前缀/)                   │${NC}"
+    echo -e "${YELLOW}│  和子域名 (https://前缀.你的域名/)                   │${NC}"
+    echo -e "${YELLOW}│  回车使用默认值，输入新值覆盖                        │${NC}"
+    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+    echo ""
+
+    local new_services=()
+    for svc in "${SERVICES_LIST[@]}"; do
+        IFS='|' read -r path host port sub <<< "$svc"
+        [[ -z "$host" ]] && host="127.0.0.1"
+        local name="${path//\//}"
+        local default_prefix="${sub:-$name}"
+
+        echo -n "  ${name} (${port}) 前缀 [${default_prefix}]: "
+        read -r prefix </dev/tty 2>/dev/null || true
+        prefix="$(printf '%s' "$prefix" | LC_ALL=C tr -cd 'a-zA-Z0-9')"
+
+        if [[ -n "$prefix" ]]; then
+            new_services+=("/${prefix}/|${host}|${port}|${prefix}")
+        else
+            new_services+=("/${default_prefix}/|${host}|${port}|${default_prefix}")
+        fi
+    done
+    SERVICES_LIST=("${new_services[@]}")
+
+    echo ""
+    info "前缀已确认"
+}
+
 detect_os() {
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
@@ -708,6 +744,7 @@ main() {
     detect_ip
     prompt_ip
     prompt_domain
+    prompt_prefixes
     install_acme
     install_caddy
 
