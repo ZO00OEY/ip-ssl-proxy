@@ -428,7 +428,10 @@ ROUTE
 
     cat >> "$caddyfile" <<ROUTE
     import /etc/caddy/routes-custom.d/*.conf
-    handle / { root * /var/www/html; file_server }
+    handle / {
+        root * /var/www/html
+        file_server
+    }
     log {
         output file /var/log/caddy/access.log {
             roll_size 50mb
