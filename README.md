@@ -1,4 +1,4 @@
-# Caddy + IP SSL 多服务反向代理
+# Caddy + SSL 多服务反向代理（IP + 域名）
 
 给**没有域名**的云服务器一键部署 HTTPS 反向代理，通过子路径路由将流量分发到多个本地服务。可选输入域名启用子域名模式，解决不支持子路径路由的应用。
 
@@ -69,7 +69,7 @@ https://IP/reader/   →  阅读 (4396)
 https://IP/hermes/   →  Hermes Agent (9119)
 ```
 
-Caddy 同时监听 80（HTTP→HTTPS 自动跳转）和 443（IP SSL 加密 + 反向代理）。
+Caddy 同时监听 80（HTTP→HTTPS 自动跳转）和 443（SSL 加密 + 反向代理，同时支持 IP 证书和域名证书）。
 
 ### 子域名访问（需域名）
 

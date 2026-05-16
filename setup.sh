@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================================
-# Caddy + IP SSL 多服务反向代理一键部署脚本
+# Caddy + SSL 多服务反向代理一键部署脚本（IP + 域名）
 #
 # 功能: 为公网 IP 申请 SSL 证书，部署 Caddy 反向代理，
 #       通过路径路由将 HTTPS 流量转发到多个本地服务。
@@ -385,7 +385,7 @@ gen_root_html() {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Caddy + IP SSL</title>
+<title>Caddy + SSL（IP + 域名）</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -495,7 +495,7 @@ body {
 ${cards}
   </div>
   <div class="footer">
-    IP SSL &middot; HTTP → HTTPS 自动跳转 &middot; 证书自动续期
+    IP SSL / Domain SSL &middot; HTTP → HTTPS 自动跳转 &middot; 证书自动续期
   </div>
   <div class="footer-path">/var/www/html/index.html</div>
 </div>
@@ -512,7 +512,7 @@ configure_caddy() {
     mkdir -p /etc/caddy
 
     cat > "$caddyfile" <<CADDYEOF
-# Caddy + IP SSL 多服务配置 - 由 setup.sh 自动生成
+# Caddy + SSL 多服务配置（IP + 域名）- 由 setup.sh 自动生成
 # 公网 IP: ${PUBLIC_IP}
 
 {
@@ -636,7 +636,7 @@ start_caddy() {
 print_summary() {
     echo ""
     echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  Caddy + IP SSL 多服务部署完成！${NC}"
+    echo -e "${GREEN}  Caddy + SSL 多服务部署完成！${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
     echo -e "  入口地址:  ${GREEN}https://${PUBLIC_IP}${NC}"
@@ -676,7 +676,7 @@ print_summary() {
 main() {
     echo ""
     echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  Caddy + IP SSL 多服务反向代理${NC}"
+    echo -e "${GREEN}  Caddy + SSL 多服务反向代理${NC}"
     echo -e "${GREEN}  一键部署脚本${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
@@ -697,6 +697,16 @@ main() {
     issue_cert
 
     stop_temp_caddy
+
+    # 域名证书由 Caddy 自动 SSL 管理，仅展示状态
+    if [[ -n "$DOMAIN" ]]; then
+        echo ""
+        echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+        echo -e "${YELLOW}│  域名证书（Caddy 自动 SSL）                          │${NC}"
+        echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+        info "${DOMAIN} 证书由 Caddy 自动申请和续期，无需 acme.sh 干预"
+        echo ""
+    fi
 
     gen_root_html
     configure_caddy
