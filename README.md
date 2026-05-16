@@ -75,8 +75,8 @@ Caddy 自动为域名签发和续期 SSL 证书，服务通过 `https://域名/�
 
 | 模式 | 拉取方式 | 证书位置 | 续期 |
 |------|---------|---------|------|
-| IP 证书 | acme.sh webroot | `~/.acme.sh/<IP>_ecc/fullchain.cer`<br>`~/.acme.sh/<IP>_ecc/<IP>.key` | crontab 每日 3:00<br>日志: `/var/log/caddy/acme-renew.log` |
-| 域名证书 | Caddy 自动签发 | `~/.local/share/caddy/certificates/`<br>`acme-v02.api.letsencrypt.org-directory/<域名>/` | Caddy 自动续期 |
+| IP 证书 | acme.sh webroot | `/root/.acme.sh/<IP>_ecc/fullchain.cer`<br>`/root/.acme.sh/<IP>_ecc/<IP>.key` | crontab 每日 3:00<br>日志: `/var/log/caddy/acme-renew.log` |
+| 域名证书 | Caddy 自动签发 | `/root/.local/share/caddy/certificates/`<br>`acme-v02.api.letsencrypt.org-directory/<域名>/` | Caddy 自动续期 |
 
 ---
 
@@ -115,7 +115,7 @@ SERVICES="/app1/|3000,/app2/|192.168.1.10|4000" bash setup.sh
 | 查看 Caddy 状态 | `systemctl status caddy` |
 | 重载配置 | `systemctl reload caddy` |
 | 查看日志 | `journalctl -u caddy -n 50 --no-pager` |
-| 手动续期 IP 证书 | `~/.acme.sh/acme.sh --cron` |
+| 手动续期 IP 证书 | `/root/.acme.sh/acme.sh --cron` |
 | 重新运行脚本 | `cd ~/ip-ssl-proxy && git pull && bash setup.sh` |
 
 ---
