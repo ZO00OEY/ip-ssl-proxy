@@ -43,6 +43,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; }
 # ---- 清理函数（Ctrl+C 时停止临时 Caddy）----
 cleanup() {
     stop_temp_caddy 2>/dev/null || true
+    ensure_caddy_running 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -301,6 +302,17 @@ stop_temp_caddy() {
     fi
     caddy stop --config /etc/caddy/Caddyfile.temp 2>/dev/null || true
     rm -f /etc/caddy/Caddyfile.temp
+    ensure_caddy_running
+}
+
+# ---- 确保系统 Caddy 在运行（从临时 Caddy 恢复）----
+ensure_caddy_running() {
+    if pgrep -x caddy &>/dev/null; then
+        return 0
+    fi
+    if command -v systemctl &>/dev/null && systemctl cat caddy.service &>/dev/null 2>&1; then
+        systemctl start caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
+    fi
 }
 
 # ---- 申请 IP 证书 ----
@@ -1044,9 +1056,22 @@ mode_ip() {
     install_acme
     install_caddy
 
-    start_temp_caddy
-    issue_ip_cert
-    stop_temp_caddy
+    # 检查已有证书是否有效（>=30 天则跳过申请流程）
+    local acme_dir="${HOME}/.acme.sh/${PUBLIC_IP}_ecc"
+    local cert_f="${acme_dir}/fullchain.cer"
+    local key_f="${acme_dir}/${PUBLIC_IP}.key"
+    if [[ -f "$cert_f" ]] && [[ -f "$key_f" ]] && openssl x509 -checkend $((30*86400)) -noout -in "$cert_f" 2>/dev/null; then
+        info "有效证书已存在（30 天内无需续期），跳过证书申请"
+        CERT_FILE="$cert_f"
+        KEY_FILE="$key_f"
+    else
+        if [[ -f "$cert_f" ]]; then
+            warn "证书即将过期，重新申请..."
+        fi
+        start_temp_caddy
+        issue_ip_cert
+        stop_temp_caddy
+    fi
 
     gen_root_html "https://${PUBLIC_IP}"
     configure_caddy "ip"
