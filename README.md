@@ -39,7 +39,13 @@
 在云服务器终端执行：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh)
+curl -fsSL https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh | bash
+```
+
+或者分两步下载再运行：
+
+```bash
+curl -fsSL -o setup.sh https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh && bash setup.sh
 ```
 
 然后**什么都不用做**，脚本全自动跑完。整个过程通常 1-3 分钟。
@@ -74,7 +80,7 @@ curl -k https://你的公网IP/tavern/
 如果你的服务列表不一样，通过环境变量覆盖：
 
 ```bash
-SERVICES="/app1/|3000,/app2/|4000" bash <(curl -fsSL https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh)
+curl -fsSL https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh | SERVICES="/app1/|3000,/app2/|4000" bash
 ```
 
 格式：`"路径|后端IP(可选)|端口"`，多个用逗号分隔，主机 IP 省略则默认为 `127.0.0.1`。

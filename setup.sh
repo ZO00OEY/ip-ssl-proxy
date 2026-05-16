@@ -9,10 +9,10 @@ set -euo pipefail
 #       同时监听 80 端口做 HTTP → HTTPS 自动跳转。
 #
 # 用法:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh)
+#   curl -fsSL https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh | bash
 #
 # 自定义服务列表:
-#   SERVICES="/app1/|3000,/app2/|4000" bash setup.sh
+#   SERVICES="/app1/|3000,/app2/|4000" curl -fsSL ... | bash
 #   SERVICES="/app1/|192.168.1.2|3000,/app2/|4000" bash setup.sh
 # ============================================================
 
