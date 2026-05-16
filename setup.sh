@@ -40,8 +40,6 @@ DEFAULT_SERVICES=(
 )
 
 DOMAIN="${DOMAIN:-}"
-WILDCARD_CERT_FILE=""
-WILDCARD_KEY_FILE=""
 
 # ============================================================
 
@@ -386,68 +384,6 @@ issue_cert() {
         --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
 }
 
-# ---- DNSPod API 密钥输入 ----
-prompt_dns_api() {
-    echo ""
-    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  需要 DNSPod API 密钥来申请通配符证书              │${NC}"
-    echo -e "${YELLOW}│  可在 DNSPod 控制台获取:                           │${NC}"
-    echo -e "${YELLOW}│  https://console.dnspod.cn/api/token                │${NC}"
-    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
-    echo ""
-
-    if [[ -z "${DP_Id:-}" ]]; then
-        echo -n "  DNSPod API ID: "
-        read -r DP_Id </dev/tty 2>/dev/null || true
-    fi
-    if [[ -z "${DP_Key:-}" ]]; then
-        echo -n "  DNSPod API Key: "
-        read -r DP_Key </dev/tty 2>/dev/null || true
-    fi
-    export DP_Id
-    export DP_Key
-    echo ""
-    info "DNSPod API 密钥已设置"
-}
-
-# ---- 申请通配符证书（DNS 挑战） ----
-issue_wildcard_cert() {
-    local acme_sh="${HOME}/.acme.sh/acme.sh"
-    local wildcard_domain="*.${DOMAIN}"
-    local cert_file="/etc/caddy/wildcard.cer"
-    local key_file="/etc/caddy/wildcard.key"
-
-    if [[ -f "$cert_file" ]] && [[ -f "$key_file" ]]; then
-        info "通配符证书已存在，检查续期..."
-        ${acme_sh} --cron -d "${wildcard_domain}" 2>/dev/null || true
-    else
-        info "申请 Let's Encrypt 通配符证书: ${wildcard_domain}"
-        info "使用 DNSPod DNS 验证模式..."
-        ${acme_sh} --issue \
-            --server letsencrypt \
-            -d "${wildcard_domain}" \
-            -d "${DOMAIN}" \
-            --dns dns_dp \
-            --force || {
-                error "通配符证书申请失败，常见原因："
-                error "1. DNSPod API ID 或 Key 错误"
-                error "2. 域名 ${DOMAIN} 不在 DNSPod 管理下"
-                error "3. DNS 未使用 DNSPod 的 NS 服务器"
-                exit 1
-            }
-        info "通配符证书申请成功！"
-    fi
-
-    # 安装到固定路径，供 Caddy 使用
-    ${acme_sh} --install-cert -d "${wildcard_domain}" \
-        --cert-file "$cert_file" \
-        --key-file "$key_file" \
-        --reloadcmd "systemctl reload caddy 2>/dev/null || true"
-
-    WILDCARD_CERT_FILE="$cert_file"
-    WILDCARD_KEY_FILE="$key_file"
-}
-
 # ---- 生成根页面 HTML ----
 gen_root_html() {
     local html="/var/www/html/index.html"
@@ -688,7 +624,6 @@ ROUTE
 
 # ${subdomain} → ${host}:${port}
 ${subdomain} {
-    tls ${WILDCARD_CERT_FILE} ${WILDCARD_KEY_FILE}
     reverse_proxy ${host}:${port} {
         header_up X-Forwarded-Proto https
         header_up X-Forwarded-For {remote_host}
@@ -701,7 +636,6 @@ ROUTE
 
 # ${DOMAIN} → 导航页
 ${DOMAIN} {
-    tls ${WILDCARD_CERT_FILE} ${WILDCARD_KEY_FILE}
     root * /var/www/html
     file_server
 }
@@ -798,10 +732,6 @@ print_summary() {
     echo "  Caddy 配置:   /etc/caddy/Caddyfile"
     echo "  SSL 证书:     ${CERT_FILE}"
     echo "  SSL 私钥:     ${KEY_FILE}"
-    if [[ -n "$WILDCARD_CERT_FILE" ]]; then
-        echo "  通配符证书:   ${WILDCARD_CERT_FILE}"
-        echo "  通配符私钥:   ${WILDCARD_KEY_FILE}"
-    fi
     echo "  访问日志:     /var/log/caddy/access.log"
     echo "  导航页面:     /var/www/html/index.html"
     echo ""
@@ -841,12 +771,6 @@ main() {
     start_temp_caddy
     issue_cert
     stop_temp_caddy
-
-    # 如果设置了域名，申请通配符证书
-    if [[ -n "$DOMAIN" ]]; then
-        prompt_dns_api
-        issue_wildcard_cert
-    fi
 
     gen_root_html
     configure_caddy
