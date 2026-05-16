@@ -658,40 +658,70 @@ print_summary_domain() {
 }
 
 # ============================================================
-# 模式 3: 添加子路径（交互式添加 handle_path）
+# 模式 3: 添加服务（自动匹配当前配置模式）
 # ============================================================
 mode_paired() {
     check_root
 
-    local custom_dir="/etc/caddy/routes-custom.d"
-
-    if [[ ! -f /etc/caddy/Caddyfile ]]; then
+    local caddyfile="/etc/caddy/Caddyfile"
+    if [[ ! -f "$caddyfile" ]]; then
         error "未找到 Caddyfile，请先运行模式 1 或模式 2"
         exit 1
     fi
 
-    # 确保 Caddyfile 有 import 自定义路由
-    if ! grep -q "routes-custom.d" /etc/caddy/Caddyfile 2>/dev/null; then
-        error "当前 Caddyfile 不支持自定义路由，请重新运行模式 1 或模式 2"
+    # 检测当前配置模式
+    local mode_type=""
+    if grep -q "IP 模式" "$caddyfile" 2>/dev/null; then
+        mode_type="ip"
+    elif grep -q "域名模式" "$caddyfile" 2>/dev/null; then
+        mode_type="domain"
+    else
+        error "无法识别 Caddyfile 模式，请重新运行模式 1 或模式 2"
         exit 1
     fi
 
+    if [[ "$mode_type" == "ip" ]]; then
+        add_custom_routes
+    else
+        add_custom_subdomains
+    fi
+}
+
+# ---- IP 模式：添加子路径 ----
+add_custom_routes() {
+    local custom_dir="/etc/caddy/routes-custom.d"
     mkdir -p "$custom_dir"
+
+    # 确保 Caddyfile 有 import
+    if ! grep -q "routes-custom.d" /etc/caddy/Caddyfile 2>/dev/null; then
+        error "当前 Caddyfile 不支持自定义路由，请重新运行模式 1"
+        exit 1
+    fi
 
     echo ""
     echo -e "${YELLOW}-----------------------------------------${NC}"
-    echo -e "${YELLOW}  添加子路径（可多次添加，留空结束）${NC}"
+    echo -e "${YELLOW}  当前模式: IP — 添加子路径${NC}"
     echo -e "${YELLOW}-----------------------------------------${NC}"
+
+    # 列出已有的
+    local has_existing=false
+    for f in "$custom_dir"/*.conf; do
+        [[ -f "$f" ]] || continue
+        [[ "$has_existing" == "false" ]] && echo "  已有子路径:" && has_existing=true
+        local n; n=$(basename "$f" .conf)
+        local p; p=$(grep -oP ':\K\d+' "$f" 2>/dev/null | head -1 || echo "?")
+        echo "    /${n}/ → :${p}"
+    done
 
     local added=false
     while true; do
         echo ""
-        echo -n "  服务名称（如: sillytavern，留空结束）: "
+        echo -n "  服务名称（如: myapp，留空结束）: "
         read -r SVC_NAME </dev/tty 2>/dev/null || true
         SVC_NAME="$(printf '%s' "$SVC_NAME" | LC_ALL=C tr -cd 'a-zA-Z0-9_-')"
         [[ -z "$SVC_NAME" ]] && break
 
-        echo -n "  后端端口（如: 8000）: "
+        echo -n "  后端端口（如: 3000）: "
         read -r SVC_PORT </dev/tty 2>/dev/null || true
         SVC_PORT="$(printf '%s' "$SVC_PORT" | LC_ALL=C tr -cd '0-9')"
         if [[ -z "$SVC_PORT" ]]; then
@@ -707,58 +737,24 @@ mode_paired() {
         }
     }
 ROUTE
-        info "已添加: /${SVC_NAME}/ → :${SVC_PORT}"
+        info "已添加: https://${PUBLIC_IP}/${SVC_NAME}/ → :${SVC_PORT}"
         added=true
     done
 
-    if [[ "$added" == "false" ]]; then
-        warn "未添加任何服务"
-        return 0
-    fi
+    [[ "$added" == "false" ]] && { warn "未添加任何服务"; return 0; }
 
-    # 更新导航页
-    generate_custom_nav
-
-    # 重载 Caddy
-    info "重载 Caddy..."
-    if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null 2>&1; then
-        systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
-    else
-        caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true
-    fi
-    info "完成！"
+    rebuild_nav_ip
+    reload_caddy
 }
 
-generate_custom_nav() {
+rebuild_nav_ip() {
     local custom_dir="/etc/caddy/routes-custom.d"
+    local base_url="https://${PUBLIC_IP}"
+    local html="/var/www/html/index.html"
+    mkdir -p /var/www/html
 
-    # 检测 base_url
-    local base_url=""
-    if grep -q "域名:" /etc/caddy/Caddyfile 2>/dev/null && [[ -n "$DOMAIN" ]]; then
-        base_url="https://${DOMAIN}"
-    elif grep -q "公网 IP:" /etc/caddy/Caddyfile 2>/dev/null; then
-        base_url="https://${PUBLIC_IP}"
-    else
-        # 从 Caddyfile 提取第一个域名块
-        local extracted
-        extracted=$(grep -oP '^[a-zA-Z0-9.-]+\s*\{' /etc/caddy/Caddyfile 2>/dev/null | head -1 | awk '{print $1}' | tr -d '{')
-        if [[ -n "$extracted" ]]; then
-            base_url="https://${extracted}"
-        else
-            base_url="https://${PUBLIC_IP}"
-        fi
-    fi
-
-    # 从 DEFAULT_SERVICES 和自定义路由构建卡片
-    local -a all_services=()
+    local -a all_services=("${DEFAULT_SERVICES[@]}")
     local name port
-
-    # 默认服务
-    for svc in "${DEFAULT_SERVICES[@]}"; do
-        all_services+=("$svc")
-    done
-
-    # 自定义服务
     for f in "$custom_dir"/*.conf; do
         [[ -f "$f" ]] || continue
         name=$(basename "$f" .conf)
@@ -766,30 +762,182 @@ generate_custom_nav() {
         [[ -n "$port" ]] && all_services+=("/${name}/|127.0.0.1|${port}|")
     done
 
-    # 生成 HTML
+    write_nav_html "$html" "$base_url" "${all_services[@]}"
+    info "导航页已更新"
+}
+
+# ---- 域名模式：添加子域名 ----
+add_custom_subdomains() {
+    local sub_dir="/etc/caddy/subdomains.d"
+    local caddyfile="/etc/caddy/Caddyfile"
+    mkdir -p "$sub_dir"
+
+    # 从 Caddyfile 提取域名
+    local domain=""
+    domain=$(grep -oP '^[a-zA-Z0-9.-]+\s*\{' "$caddyfile" 2>/dev/null | head -1 | awk '{print $1}' | tr -d '{')
+    if [[ -z "$domain" ]]; then
+        # 尝试从注释提取
+        domain=$(grep "域名:" "$caddyfile" 2>/dev/null | head -1 | grep -oP '[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+    fi
+    if [[ -z "$domain" ]]; then
+        error "无法从 Caddyfile 提取域名"
+        exit 1
+    fi
+    DOMAIN="$domain"
+
+    # 确保 Caddyfile 有 import 子域名目录
+    if ! grep -q "subdomains.d" "$caddyfile" 2>/dev/null; then
+        echo "" >> "$caddyfile"
+        echo "import /etc/caddy/subdomains.d/*.conf" >> "$caddyfile"
+        info "已在 Caddyfile 添加子域名引用"
+    fi
+
+    echo ""
+    echo -e "${YELLOW}-----------------------------------------${NC}"
+    echo -e "${YELLOW}  当前模式: 域名 — 添加子域名${NC}"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
+
+    # 列出已有的
+    local has_existing=false
+    for f in "$sub_dir"/*.conf; do
+        [[ -f "$f" ]] || continue
+        [[ "$has_existing" == "false" ]] && echo "  已有子域名:" && has_existing=true
+        local n; n=$(basename "$f" .conf)
+        local p; p=$(grep -oP ':\K\d+' "$f" 2>/dev/null | head -1 || echo "?")
+        echo "    ${n}.${DOMAIN} → :${p}"
+    done
+
+    local added=false
+    while true; do
+        echo ""
+        echo -n "  子域名前缀（如: st → ${DOMAIN} 的 st.${DOMAIN}，留空结束）: "
+        read -r SUB_PREFIX </dev/tty 2>/dev/null || true
+        SUB_PREFIX="$(printf '%s' "$SUB_PREFIX" | LC_ALL=C tr -cd 'a-zA-Z0-9-')"
+        [[ -z "$SUB_PREFIX" ]] && break
+
+        echo -n "  后端端口（如: 8000）: "
+        read -r SUB_PORT </dev/tty 2>/dev/null || true
+        SUB_PORT="$(printf '%s' "$SUB_PORT" | LC_ALL=C tr -cd '0-9')"
+        if [[ -z "$SUB_PORT" ]]; then
+            error "端口不能为空"
+            continue
+        fi
+
+        local sub_domain="${SUB_PREFIX}.${DOMAIN}"
+
+        # 检查重复
+        if [[ -f "${sub_dir}/${SUB_PREFIX}.conf" ]]; then
+            warn "子域名 ${sub_domain} 已存在，跳过"
+            continue
+        fi
+
+        cat > "${sub_dir}/${SUB_PREFIX}.conf" <<ROUTE
+${sub_domain} {
+    reverse_proxy 127.0.0.1:${SUB_PORT} {
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-For {remote_host}
+    }
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 50mb
+            roll_keep 3
+        }
+    }
+}
+ROUTE
+        info "已添加: https://${sub_domain}/ → :${SUB_PORT}"
+        added=true
+    done
+
+    [[ "$added" == "false" ]] && { warn "未添加任何子域名"; return 0; }
+
+    rebuild_nav_domain "$domain"
+    reload_caddy
+}
+
+rebuild_nav_domain() {
+    local domain="${1}"
+    local sub_dir="/etc/caddy/subdomains.d"
+    local base_url="https://${domain}"
     local html="/var/www/html/index.html"
     mkdir -p /var/www/html
 
+    # 默认服务（域名路径）+ 子域名
+    local -a all_services=()
+    local name port
+
+    for svc in "${DEFAULT_SERVICES[@]}"; do
+        all_services+=("$svc")
+    done
+
+    for f in "$sub_dir"/*.conf; do
+        [[ -f "$f" ]] || continue
+        name=$(basename "$f" .conf)
+        port=$(grep -oP ':\K\d+' "$f" 2>/dev/null | head -1 || true)
+        [[ -n "$port" ]] && all_services+=("/${name}/|127.0.0.1|${port}|subdomain")
+    done
+
     local cards=""
     for svc in "${all_services[@]}"; do
-        IFS='|' read -r p h port _ <<< "$svc"
+        IFS='|' read -r p h port stype <<< "$svc"
         name="${p//\//}"
         [[ -z "$name" ]] && continue
 
         local note=""
-        if [[ "$port" == "8000" ]]; then
-            name="SillyTavern"
-            note=" <span style=\"color:#f87171;font-size:0.75rem;\">（通过本方式使用酒馆会CSS错乱）</span>"
+        local url=""
+        if [[ "$stype" == "subdomain" ]]; then
+            # 子域名入口
+            url="https://${name}.${domain}/"
+            note=" <span style=\"color:#22d3ee;font-size:0.7rem;\">[子域名]</span>"
+        else
+            url="${base_url}${p}"
+            if [[ "$port" == "8000" ]]; then
+                name="SillyTavern"
+                note=" <span style=\"color:#f87171;font-size:0.75rem;\">（通过本方式使用酒馆会CSS错乱）</span>"
+            fi
         fi
 
         cards+="        <div class=\"card\">
           <div class=\"card-title\">${name}${note}</div>
-          <div class=\"card-links\"><a href=\"${base_url}${p}\" class=\"link\">${base_url}${p}</a></div>
+          <div class=\"card-links\"><a href=\"${url}\" class=\"link\">${url}</a></div>
         </div>
 "
     done
 
-    cat > "$html" <<HTML
+    write_nav_html "$html" "$base_url" "$cards" --raw
+    info "导航页已更新"
+}
+
+write_nav_html() {
+    local file="$1"
+    local base="$2"
+    shift 2
+    local cards_content=""
+    local raw_mode=false
+    [[ "$1" == "--raw" ]] && { raw_mode=true; shift; }
+
+    if [[ "$raw_mode" == "true" ]]; then
+        cards_content="$*"
+    else
+        local all_services=("$@")
+        for svc in "${all_services[@]}"; do
+            IFS='|' read -r p h port _ <<< "$svc"
+            local name="${p//\//}"
+            [[ -z "$name" ]] && continue
+            local note=""
+            if [[ "$port" == "8000" ]]; then
+                name="SillyTavern"
+                note=" <span style=\"color:#f87171;font-size:0.75rem;\">（通过本方式使用酒馆会CSS错乱）</span>"
+            fi
+            cards_content+="        <div class=\"card\">
+          <div class=\"card-title\">${name}${note}</div>
+          <div class=\"card-links\"><a href=\"${base}${p}\" class=\"link\">${base}${p}</a></div>
+        </div>
+"
+        done
+    fi
+
+    cat > "$file" <<HTML
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -836,85 +984,22 @@ body {
 <body>
 <div class="container">
   <div class="header"><h1>本站导航</h1></div>
-  <div class="cards">${cards}</div>
+  <div class="cards">${cards_content}</div>
   <div class="footer">SSL 加密 &middot; 证书自动续期</div>
 </div>
 </body>
 </html>
 HTML
-    info "导航页已更新"
 }
 
-# ============================================================
-# 模式 4: 子域名管理（原模式 3）
-# ============================================================
-
-# ---- 列出已有子域名 ----
-list_subdomains() {
-    local sub_dir="/etc/caddy/subdomains.d"
-    local found=()
-
-    if [[ -d "$sub_dir" ]]; then
-        for f in "$sub_dir"/*.conf; do
-            [[ -f "$f" ]] || continue
-            local sub
-            sub=$(basename "$f" .conf)
-            local port
-            port=$(grep -oP ':\K\d+' "$f" 2>/dev/null | head -1 || echo "?")
-            found+=("${sub}.${DOMAIN} (端口 ${port})")
-        done
-    fi
-
-    if [[ ${#found[@]} -eq 0 ]]; then
-        echo "  （暂无子域名）"
+reload_caddy() {
+    info "重载 Caddy..."
+    if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null 2>&1; then
+        systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
     else
-        for entry in "${found[@]}"; do
-            echo "  ${entry}"
-        done
+        caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true
     fi
-}
-
-
-# ---- 添加子域名到 Caddyfile ----
-add_subdomain_to_caddy() {
-    local sub_domain="${1}"
-    local port="${2}"
-    local sub_prefix="${sub_domain%%.${DOMAIN}}"
-    local sub_dir="/etc/caddy/subdomains.d"
-    local caddyfile="/etc/caddy/Caddyfile"
-
-    mkdir -p "$sub_dir"
-
-    # 检查是否已存在
-    if [[ -f "${sub_dir}/${sub_prefix}.conf" ]]; then
-        warn "子域名 ${sub_domain} 已存在，跳过添加"
-        return 0
-    fi
-
-    info "添加子域名: ${sub_domain} → :${port}（Caddy 将自动签发证书）"
-    cat > "${sub_dir}/${sub_prefix}.conf" <<ROUTE
-${sub_domain} {
-    reverse_proxy 127.0.0.1:${port} {
-        header_up X-Forwarded-Proto https
-        header_up X-Forwarded-For {remote_host}
-    }
-    log {
-        output file /var/log/caddy/access.log {
-            roll_size 50mb
-            roll_keep 3
-        }
-    }
-}
-ROUTE
-
-    # 确保主 Caddyfile 有 import 子域名目录
-    if ! grep -q "import.*subdomains.d" "$caddyfile" 2>/dev/null; then
-        echo "" >> "$caddyfile"
-        echo "import /etc/caddy/subdomains.d/*.conf" >> "$caddyfile"
-        info "已在 Caddyfile 添加子域名引用"
-    fi
-
-    info "已添加 ${sub_domain} → :${port}"
+    info "完成！"
 }
 
 # ============================================================
@@ -959,65 +1044,6 @@ mode_domain() {
 }
 
 # ============================================================
-# 模式 4: 子域名管理
-# ============================================================
-mode_subdomain() {
-    check_root
-
-    # 需要先有域名
-    if [[ -z "$DOMAIN" ]]; then
-        prompt_domain
-    fi
-
-    echo ""
-    echo -e "${YELLOW}-----------------------------------------${NC}"
-    echo -e "${YELLOW}  现有子域名${NC}"
-    echo -e "${YELLOW}-----------------------------------------${NC}"
-    list_subdomains
-
-    echo ""
-    echo -e "${YELLOW}-----------------------------------------${NC}"
-    echo -e "${YELLOW}  添加新子域名${NC}"
-    echo -e "${YELLOW}-----------------------------------------${NC}"
-    echo -n "  子域名前缀（如: st → ${DOMAIN} 的 st.${DOMAIN}）: "
-    read -r SUB_PREFIX </dev/tty 2>/dev/null || true
-    SUB_PREFIX="$(printf '%s' "$SUB_PREFIX" | LC_ALL=C tr -cd 'a-zA-Z0-9-')"
-
-    if [[ -z "$SUB_PREFIX" ]]; then
-        error "子域名前缀不能为空"
-        return 1
-    fi
-
-    echo -n "  后端端口（如: 8000）: "
-    read -r SUB_PORT </dev/tty 2>/dev/null || true
-    SUB_PORT="$(printf '%s' "$SUB_PORT" | LC_ALL=C tr -cd '0-9')"
-
-    if [[ -z "$SUB_PORT" ]]; then
-        error "端口不能为空"
-        return 1
-    fi
-
-    local sub_domain="${SUB_PREFIX}.${DOMAIN}"
-    echo ""
-    info "即将添加: ${sub_domain} → :${SUB_PORT}（Caddy 将自动签发证书）"
-
-    if [[ -f /etc/caddy/Caddyfile ]]; then
-        add_subdomain_to_caddy "$sub_domain" "$SUB_PORT"
-
-        # 重载 Caddy
-        info "重载 Caddy..."
-        if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null 2>&1; then
-            systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
-        else
-            caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true
-        fi
-        info "子域名添加完成！https://${sub_domain}/"
-    else
-        warn "未找到 Caddyfile，请先运行模式 2 设置域名"
-    fi
-}
-
-# ============================================================
 # 菜单
 # ============================================================
 show_menu() {
@@ -1030,12 +1056,11 @@ show_menu() {
     echo ""
     echo "  1  拉取IP证书  [二选一]"
     echo "  2  拉取域名证书  [二选一]"
-    echo "  3  配对模式（IP + 域名双入口）"
-    echo "  4  添加子域名"
+    echo "  3  添加服务（自动匹配当前配置）"
     echo "  0  退出"
     echo ""
     echo "----------------------------------------"
-    echo -n "  请输入 [1/2/3/4/0]: "
+    echo -n "  请输入 [1/2/3/0]: "
 }
 
 # ============================================================
@@ -1050,9 +1075,8 @@ main() {
         1) mode_ip ;;
         2) mode_domain ;;
         3) mode_paired ;;
-        4) mode_subdomain ;;
         q|Q|0) info "已退出" ; exit 0 ;;
-        *) error "无效选项，请输入 1、2、3、4 或 0" ; exit 1 ;;
+        *) error "无效选项，请输入 1、2、3 或 0" ; exit 1 ;;
     esac
 }
 
