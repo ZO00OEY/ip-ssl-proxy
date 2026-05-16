@@ -466,7 +466,7 @@ start_caddy() {
     # 确保日志目录权限正确（Caddy systemd 以 caddy 用户运行）
     mkdir -p /var/log/caddy
     if id -u caddy &>/dev/null; then
-        chown caddy:caddy /var/log/caddy 2>/dev/null || true
+        chown -R caddy:caddy /var/log/caddy 2>/dev/null || true
     fi
 
     if command -v systemctl &>/dev/null && systemctl cat caddy.service &>/dev/null; then
@@ -1032,7 +1032,7 @@ reload_caddy() {
     # 确保日志目录权限正确
     mkdir -p /var/log/caddy
     if id -u caddy &>/dev/null; then
-        chown caddy:caddy /var/log/caddy 2>/dev/null || true
+        chown -R caddy:caddy /var/log/caddy 2>/dev/null || true
     fi
 
     if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null; then
@@ -1046,6 +1046,11 @@ reload_caddy() {
             sleep 1
             if command -v systemctl &>/dev/null && systemctl cat caddy.service &>/dev/null 2>&1; then
                 systemctl start caddy 2>&1 || ok=false
+                sleep 1
+                if ! systemctl is-active caddy &>/dev/null; then
+                    error "Caddy 启动后异常退出，请检查: journalctl -u caddy -n 30 --no-pager"
+                    ok=false
+                fi
             else
                 nohup caddy run --config /etc/caddy/Caddyfile --adapter caddyfile > /var/log/caddy/caddy.log 2>&1 &
                 sleep 2
