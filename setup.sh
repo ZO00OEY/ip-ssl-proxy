@@ -352,8 +352,8 @@ issue_cert() {
         --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
 }
 
-# ---- 申请域名证书（acme.sh webroot 模式）----
-issue_domain_certs() {
+# ---- 域名证书管理：不存在则申请，存在则检查有效期 ----
+manage_domain_cert() {
     [[ -z "$DOMAIN" ]] && return
     local acme_sh="${HOME}/.acme.sh/acme.sh"
 
@@ -367,7 +367,26 @@ issue_domain_certs() {
     local key_file="${cert_dir}/${DOMAIN}.key"
 
     if [[ -f "$cert_file" ]] && [[ -f "$key_file" ]]; then
-        info "域名证书已存在: ${DOMAIN}"
+        local expiry
+        expiry=$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | cut -d= -f2)
+        local now_epoch
+        now_epoch=$(date +%s)
+        local expiry_epoch
+        expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
+        if [[ -n "$expiry" ]] && [[ "$expiry_epoch" -gt "$now_epoch" ]]; then
+            local days_left=$(( (expiry_epoch - now_epoch) / 86400 ))
+            echo -e "  ${DOMAIN}  ...  ${GREEN}有效${NC}（${days_left} 天后到期）"
+            echo ""
+            info "域名证书有效，Caddy 自动 SSL 将接管续期"
+        else
+            echo -e "  ${DOMAIN}  ...  ${RED}已过期${NC}"
+            echo ""
+            info "域名证书已过期，尝试重新申请..."
+            ${acme_sh} --issue --server letsencrypt -d "${DOMAIN}" \
+                --webroot /var/www/html --force 2>/dev/null || {
+                warn "重新申请失败，Caddy 自动 SSL 可能接管域名证书"
+            }
+        fi
     else
         info "申请域名证书: ${DOMAIN}"
         ${acme_sh} --issue --server letsencrypt -d "${DOMAIN}" \
@@ -381,7 +400,6 @@ issue_domain_certs() {
     fi
     echo ""
 }
-
 # ---- 生成根页面 HTML ----
 gen_root_html() {
     local html="/var/www/html/index.html"
@@ -664,43 +682,6 @@ start_caddy() {
     fi
 }
 
-# ---- 检查域名 SSL 证书（验证 acme.sh 签发文件） ----
-check_domain_certs() {
-    [[ -z "$DOMAIN" ]] && return
-
-    echo ""
-    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  验证域名 SSL 证书...                               │${NC}"
-    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
-
-    local cert_file="${HOME}/.acme.sh/${DOMAIN}_ecc/fullchain.cer"
-    local key_file="${HOME}/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key"
-    echo -n "  ${DOMAIN}  ...  "
-
-    if [[ -f "$cert_file" ]] && [[ -f "$key_file" ]]; then
-        local expiry
-        expiry=$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | cut -d= -f2)
-        local now_epoch
-        now_epoch=$(date +%s)
-        local expiry_epoch
-        expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
-        if [[ -n "$expiry" ]] && [[ "$expiry_epoch" -gt "$now_epoch" ]]; then
-            local days_left=$(( (expiry_epoch - now_epoch) / 86400 ))
-            echo -e "${GREEN}有效${NC}（${days_left} 天后到期）"
-            echo ""
-            info "域名 SSL 证书有效"
-        else
-            echo -e "${RED}已过期${NC}"
-            echo ""
-            warn "域名证书已过期，请重新申请"
-        fi
-    else
-        echo -e "${RED}证书文件缺失${NC}"
-        echo ""
-        warn "域名证书未找到，请检查 acme.sh 日志"
-    fi
-}
-
 print_summary() {
     echo ""
     echo -e "${GREEN}========================================${NC}"
@@ -764,9 +745,9 @@ main() {
     start_temp_caddy
     issue_cert
 
-    # 如果设置了域名，在临时 Caddy 还在运行时申请域名证书
+    # 如果设置了域名，管理域名证书（不存在则申请，存在则检查有效期）
     if [[ -n "$DOMAIN" ]]; then
-        issue_domain_certs
+        manage_domain_cert
     fi
 
     stop_temp_caddy
@@ -775,7 +756,6 @@ main() {
     configure_caddy
     setup_cron_renew
     start_caddy
-    check_domain_certs
     print_summary
 }
 
