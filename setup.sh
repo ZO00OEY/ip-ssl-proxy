@@ -418,39 +418,6 @@ issue_cert() {
         --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
 }
 
-# ---- 申请域名证书（SAN 证书，覆盖主域名 + 所有子域名） ----
-issue_domain_certs() {
-    if [[ -z "$DOMAIN" ]]; then
-        return
-    fi
-    local acme_sh="${HOME}/.acme.sh/acme.sh"
-    mkdir -p /var/www/html
-
-    # 每个域名单独申请，一个失败不影响其他
-    for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r path h port sub <<< "$svc"
-        [[ -z "$sub" ]] && continue
-        local domain="${sub}.${DOMAIN}"
-        local cert_dir="${HOME}/.acme.sh/${domain}_ecc"
-
-        if [[ -f "${cert_dir}/fullchain.cer" ]]; then
-            info "证书已存在: ${domain}，检查续期..."
-            ${acme_sh} --cron -d "${domain}" 2>/dev/null || true
-        else
-            info "申请证书: ${domain}..."
-            ${acme_sh} --issue --server letsencrypt -d "${domain}" \
-                --webroot /var/www/html --force || {
-                warn "证书申请失败: ${domain}（DNS 未配置，可稍后手动申请）"
-                continue
-            }
-            info "证书申请成功: ${domain}"
-        fi
-
-        ${acme_sh} --install-cert -d "${domain}" \
-            --reloadcmd "systemctl reload caddy 2>/dev/null || true" 2>/dev/null || true
-    done
-}
-
 # ---- 生成根页面 HTML ----
 gen_root_html() {
     local html="/var/www/html/index.html"
@@ -687,19 +654,11 @@ ROUTE
             [[ -z "$sub" ]] && continue
 
             local subdomain="${sub}.${DOMAIN}"
-            local sub_cert_dir="${HOME}/.acme.sh/${subdomain}_ecc"
             cat >> "$caddyfile" <<ROUTE
 
 # ${subdomain} → ${host}:${port}
 ${subdomain} {
 ROUTE
-            # 有独立证书则显式指定，否则让 Caddy 自动 SSL
-            if [[ -f "${sub_cert_dir}/fullchain.cer" ]]; then
-                cat >> "$caddyfile" <<ROUTE
-    tls ${sub_cert_dir}/fullchain.cer ${sub_cert_dir}/${subdomain}.key
-
-ROUTE
-            fi
             cat >> "$caddyfile" <<ROUTE
     reverse_proxy ${host}:${port} {
         header_up X-Forwarded-Proto https
@@ -777,12 +736,7 @@ print_summary() {
     echo ""
     if [[ -n "$DOMAIN" ]]; then
         echo -e "  ${GREEN}域名访问已启用！${NC}"
-        echo "  请确保以下子域名已添加 DNS A 记录指向本机 IP:"
-        for svc in "${SERVICES_LIST[@]}"; do
-            IFS='|' read -r path h port sub <<< "$svc"
-            [[ -z "$sub" ]] && continue
-            echo "    ${sub}.${DOMAIN}  ->  ${PUBLIC_IP}"
-        done
+        echo "  Caddy 将自动为子域名申请和续期 SSL 证书"
         echo ""
     fi
     echo "  Caddy 配置:   /etc/caddy/Caddyfile"
@@ -831,7 +785,6 @@ main() {
     start_temp_caddy
     issue_cert
     stop_temp_caddy
-    issue_domain_certs
 
     gen_root_html
     configure_caddy
