@@ -726,6 +726,55 @@ start_caddy() {
     fi
 }
 
+# ---- 检查域名 SSL 证书（Caddy 自动签发后验证） ----
+check_domain_certs() {
+    [[ -z "$DOMAIN" ]] && return
+
+    echo ""
+    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}│  验证域名 SSL 证书...                               │${NC}"
+    echo -e "${YELLOW}│  Caddy 正在自动为域名申请 Let's Encrypt 证书        │${NC}"
+    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+
+    local domains_to_check=("${DOMAIN}")
+    for svc in "${SERVICES_LIST[@]}"; do
+        IFS='|' read -r _ _ _ sub <<< "$svc"
+        [[ -n "$sub" ]] && domains_to_check+=("${sub}.${DOMAIN}")
+    done
+
+    local all_ok=true
+    for domain in "${domains_to_check[@]}"; do
+        echo -n "  https://${domain}/  ...  "
+        local code=""
+        local attempt=0
+        while [[ $attempt -lt 4 ]]; do
+            code=$(curl -o /dev/null -s -w "%{http_code}" "https://${domain}/" \
+                --connect-timeout 5 --max-time 8 2>/dev/null || echo "000")
+            [[ "$code" != "000" ]] && break
+            attempt=$((attempt + 1))
+            [[ $attempt -lt 4 ]] && sleep 3
+        done
+        if [[ "$code" != "000" ]]; then
+            echo -e "${GREEN}OK (${code})${NC}"
+        else
+            echo -e "${RED}未就绪${NC}"
+            all_ok=false
+        fi
+    done
+
+    if $all_ok; then
+        echo ""
+        info "域名 SSL 证书全部就绪"
+    else
+        echo ""
+        warn "部分域名证书尚未就绪，Caddy 后台仍在申请中"
+        warn "稍后可用以下命令检查:"
+        for domain in "${domains_to_check[@]}"; do
+            echo "    curl -I https://${domain}/"
+        done
+    fi
+}
+
 print_summary() {
     echo ""
     echo -e "${GREEN}========================================${NC}"
@@ -760,7 +809,7 @@ print_summary() {
     echo ""
     if [[ -n "$DOMAIN" ]]; then
         echo -e "  ${GREEN}域名访问已启用！${NC}"
-        echo "  Caddy 将自动为子域名申请和续期 SSL 证书"
+        echo "  Caddy 自动 SSL 证书续期（内建，无需额外配置）"
         echo ""
     fi
     echo "  Caddy 配置:   /etc/caddy/Caddyfile"
@@ -810,6 +859,7 @@ main() {
     configure_caddy
     setup_cron_renew
     start_caddy
+    check_domain_certs
     print_summary
 }
 
