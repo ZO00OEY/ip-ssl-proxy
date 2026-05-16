@@ -398,6 +398,34 @@ ROUTE
         file_server
     }
 
+ROUTE
+
+    # 兜底规则：如果有 SillyTavern（端口 8000），将其他未匹配路径转发给它
+    # 用于处理酒馆这种在 HTML 里使用绝对路径引用资源的 Web 应用
+    local catch_all=""
+    for svc in "${SERVICES_LIST[@]}"; do
+        IFS='|' read -r p h port <<< "$svc"
+        [[ -z "$h" ]] && h="127.0.0.1"
+        # 端口 8000 标记为 SillyTavern，需要兜底
+        if [[ "$port" == "8000" ]]; then
+            catch_all="${h}:${port}"
+        fi
+    done
+
+    if [[ -n "$catch_all" ]]; then
+        cat >> "$caddyfile" <<ROUTE
+    # 兜底：未匹配路径 → ${catch_all}（酒馆资源：/js/, /css/, /api/ 等）
+    handle {
+        reverse_proxy ${catch_all} {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+ROUTE
+    fi
+
+    cat >> "$caddyfile" <<ROUTE
     log {
         output file /var/log/caddy/access.log {
             roll_size 50mb
