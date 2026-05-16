@@ -496,6 +496,7 @@ main() {
 
     check_root
     parse_services
+    detect_os
     install_deps
     detect_ip
     install_acme
