@@ -11,28 +11,35 @@ set -euo pipefail
 # 用法:
 #   curl -fsSL https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh | bash
 #
+# 带域名（启用子域名访问，Caddy 自动签发 SSL 证书）:
+#   DOMAIN=yourdomain.com curl -fsSL ... | bash
+#
 # 自定义服务列表:
 #   SERVICES="/app1/|3000,/app2/|4000" curl -fsSL ... | bash
-#   SERVICES="/app1/|192.168.1.2|3000,/app2/|4000" bash setup.sh
+#   SERVICES="/app1/|3000|sub" DOMAIN=yourdomain.com curl -fsSL ... | bash
 # ============================================================
 
 # ============================================================
 # 服务配置
 # ============================================================
-# 格式: "路径|后端主机|端口"
+# 格式: "路径|后端主机|端口|子域名"
 # 路径建议用 /name/ 格式（末尾保留斜杠）
 # 主机默认为 127.0.0.1，可省略
+# 子域名可选，设置后同时通过 https://子域名.你的域名 访问
+# 设置 DOMAIN 环境变量启用子域名访问
 #
 # 可通过 SERVICES 环境变量覆盖，格式同上，用逗号分隔
 # ============================================================
 
 DEFAULT_SERVICES=(
-    "/couchdb/|127.0.0.1|5984"    # Obsidian Livesync (CouchDB)
-    "/tavern/|127.0.0.1|8000"     # SillyTavern 酒馆
-    "/mihomo/|127.0.0.1|9097"     # Mihomo 控制面板
-    "/reader/|127.0.0.1|4396"     # 阅读
-    "/hermes/|127.0.0.1|9119"     # Hermes Agent
+    "/couchdb/|127.0.0.1|5984|"
+    "/tavern/|127.0.0.1|8000|st"
+    "/mihomo/|127.0.0.1|9097|"
+    "/reader/|127.0.0.1|4396|"
+    "/hermes/|127.0.0.1|9119|"
 )
+
+DOMAIN="${DOMAIN:-}"
 
 # ============================================================
 
@@ -62,11 +69,21 @@ parse_services() {
     fi
 
     info "服务列表:"
+    local has_subdomain=false
     for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r p h port <<< "$svc"
+        IFS='|' read -r p h port sub <<< "$svc"
         [[ -z "$h" ]] && h="127.0.0.1"
-        echo "    ${p}  →  ${h}:${port}"
+        local line="    ${p}  →  ${h}:${port}"
+        if [[ -n "$sub" && -n "$DOMAIN" ]]; then
+            line+="  (https://${sub}.${DOMAIN}/)"
+            has_subdomain=true
+        fi
+        echo "$line"
     done
+    if [[ "$has_subdomain" == "true" ]]; then
+        echo ""
+        info "子域名访问已启用（DOMAIN=${DOMAIN}），Caddy 将自动签发 SSL 证书"
+    fi
 }
 
 check_root() {
@@ -295,10 +312,14 @@ gen_root_html() {
 
     local list_items=""
     for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r p h port <<< "$svc"
+        IFS='|' read -r p h port sub <<< "$svc"
         local name="${p//\//}"
         [[ -z "$name" ]] && continue
-        list_items+="        <li><a href=\"${p}\">${name}</a> <span style=\"color:#666;\">(${h}:${port})</span></li>\\n"
+        local links="<a href=\"${p}\">IP:${p}</a>"
+        if [[ -n "$sub" && -n "$DOMAIN" ]]; then
+            links+=" | <a href=\"https://${sub}.${DOMAIN}/\">${sub}.${DOMAIN}</a>"
+        fi
+        list_items+="        <li>${links} <span style=\"color:#666;\">(${h}:${port})</span></li>\\n"
     done
 
     cat > "$html" <<HTML
@@ -372,7 +393,7 @@ CADDYEOF
 
     # 写入每个服务的路由
     for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r path host port <<< "$svc"
+        IFS='|' read -r path host port sub <<< "$svc"
         [[ -z "$host" ]] && host="127.0.0.1"
         local strip_path="${path%/}"
 
@@ -405,7 +426,30 @@ ROUTE
         }
     }
 }
+
+CADDYEOF
+
+    # ---- 子域名区块（如果设置了 DOMAIN） ----
+    if [[ -n "$DOMAIN" ]]; then
+        for svc in "${SERVICES_LIST[@]}"; do
+            IFS='|' read -r path host port sub <<< "$svc"
+            [[ -z "$host" ]] && host="127.0.0.1"
+            [[ -z "$sub" ]] && continue
+
+            local subdomain="${sub}.${DOMAIN}"
+            cat >> "$caddyfile" <<ROUTE
+
+# ${subdomain} → ${host}:${port}
+${subdomain} {
+    reverse_proxy ${host}:${port} {
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-For {remote_host}
+    }
+}
 ROUTE
+        done
+        info "已添加子域名路由（共 $(grep -c '\.'${DOMAIN}'' "$caddyfile" 2>/dev/null || echo 0) 个）"
+    fi
 
     info "Caddy 配置已生成，共 ${#SERVICES_LIST[@]} 个服务路由"
 }
@@ -462,11 +506,25 @@ print_summary() {
     echo ""
     echo -e "  ${YELLOW}可用服务:${NC}"
     for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r path h port <<< "$svc"
+        IFS='|' read -r path h port sub <<< "$svc"
         [[ -z "$h" ]] && h="127.0.0.1"
-        echo -e "    https://${PUBLIC_IP}${path}  →  ${h}:${port}"
+        local line="    https://${PUBLIC_IP}${path}  →  ${h}:${port}"
+        if [[ -n "$sub" && -n "$DOMAIN" ]]; then
+            line+="  |  https://${sub}.${DOMAIN}/"
+        fi
+        echo -e "$line"
     done
     echo ""
+    if [[ -n "$DOMAIN" ]]; then
+        echo -e "  ${GREEN}域名访问已启用！${NC}"
+        echo "  请确保域名 DNS 已配置以下 A 记录:"
+        for svc in "${SERVICES_LIST[@]}"; do
+            IFS='|' read -r path h port sub <<< "$svc"
+            [[ -z "$sub" ]] && continue
+            echo "    ${sub}  →  ${PUBLIC_IP}"
+        done
+        echo ""
+    fi
     echo "  Caddy 配置:   /etc/caddy/Caddyfile"
     echo "  SSL 证书:     ${CERT_FILE}"
     echo "  SSL 私钥:     ${KEY_FILE}"

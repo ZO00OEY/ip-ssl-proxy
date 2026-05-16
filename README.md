@@ -68,6 +68,54 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
 
 ---
 
+## 第三部分：子域名访问（可选）
+
+如果你有域名，可以启用子域名方式访问，**支持 SillyTavern 这类不支持子路径路由的应用**。
+
+### 原理
+
+```
+IP 访问（保留）:                          子域名访问（新增）:
+https://IP/couchdb/  → CouchDB           https://st.你的域名/  → SillyTavern ✅ CSS 正常
+https://IP/tavern/   → SillyTavern (CSS 错乱)
+```
+
+子域名下 Caddy **自动签发可信 SSL 证书**，浏览器不报"不安全"。
+
+### DNS 配置
+
+在域名管理后台添加 A 记录解析到服务器 IP：
+
+| 记录类型 | 主机记录 | 记录值 |
+|---|---|---|
+| A | `@` | `你的服务器IP` |
+| A | `st` | `你的服务器IP` |
+| A | `*` | `你的服务器IP`（泛解析，可选） |
+
+### 安装
+
+```bash
+cd ~/ip-ssl-proxy
+git pull
+DOMAIN=你的域名 bash setup.sh
+```
+
+脚本会自动：
+- 保留 IP 路径访问不变
+- 为带子域名的服务添加 `https://子域名.你的域名` 入口
+- Caddy 自动为每个子域名申请 SSL 证书（90 天有效期，自动续期）
+
+### 默认子域名
+
+| 服务 | 子域名 | 访问地址 |
+|---|---|---|
+| SillyTavern 酒馆 | `st` | `https://st.你的域名/` |
+
+
+验证: 浏览器访问 `https://st.你的域名/`
+
+---
+
 ## 验证部署
 
 浏览器访问 `https://你的公网IP` 能看到服务列表页。
