@@ -409,11 +409,11 @@ body {
   color: #f1f5f9;
   letter-spacing: -0.02em;
 }
-.header .ip {
-  font-size: 0.85rem;
-  color: #64748b;
-  margin-top: 0.4rem;
-  font-family: "SF Mono", "Fira Code", monospace;
+.footer-path {
+  text-align: center;
+  margin-top: 0.75rem;
+  font-size: 0.7rem;
+  color: #334155;
 }
 .domain {
   text-align: center;
@@ -484,8 +484,7 @@ body {
 <body>
 <div class="container">
   <div class="header">
-    <h1>Caddy 反向代理</h1>
-    <p class="ip">${PUBLIC_IP}</p>
+    <h1>本站导航</h1>
     ${domain_section}
   </div>
   <div class="cards">
@@ -494,6 +493,7 @@ ${cards}
   <div class="footer">
     IP SSL &middot; HTTP → HTTPS 自动跳转 &middot; 证书自动续期
   </div>
+  <div class="footer-path">/var/www/html/index.html</div>
 </div>
 </body>
 </html>
@@ -675,6 +675,7 @@ print_summary() {
     echo "  SSL 证书:     ${CERT_FILE}"
     echo "  SSL 私钥:     ${KEY_FILE}"
     echo "  访问日志:     /var/log/caddy/access.log"
+    echo "  导航页面:     /var/www/html/index.html"
     echo ""
     echo -e "${YELLOW}  重要提示：${NC}"
     echo "  1. 云服务商安全组需放行端口 443 (HTTPS) 和 80 (HTTP)"
