@@ -152,22 +152,33 @@ prompt_prefixes() {
     echo -e "${YELLOW}│  为每个服务设置访问前缀                              │${NC}"
     echo -e "${YELLOW}│  同时用于子路径 (https://IP/前缀/)                   │${NC}"
     echo -e "${YELLOW}│  和子域名 (https://前缀.你的域名/)                   │${NC}"
-    echo -e "${YELLOW}│  回车使用默认值，输入新值覆盖                        │${NC}"
+    echo -e "${YELLOW}│  回车使用默认值，输入新值覆盖，输入 q 跳过全部      │${NC}"
     echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
     echo ""
 
     local new_services=()
+    local skip_all=false
     for svc in "${SERVICES_LIST[@]}"; do
         IFS='|' read -r path host port sub <<< "$svc"
         [[ -z "$host" ]] && host="127.0.0.1"
         local name="${path//\//}"
         local default_prefix="${sub:-$name}"
 
+        if $skip_all; then
+            new_services+=("$svc")
+            continue
+        fi
+
         echo -n "  ${name} (${port}) 前缀 [${default_prefix}]: "
         read -r prefix </dev/tty 2>/dev/null || true
+        local raw_prefix="$prefix"
         prefix="$(printf '%s' "$prefix" | LC_ALL=C tr -cd 'a-zA-Z0-9')"
 
-        if [[ -n "$prefix" ]]; then
+        if [[ "$raw_prefix" == "q" ]] || [[ "$raw_prefix" == "Q" ]]; then
+            skip_all=true
+            new_services+=("$svc")
+            info "已跳过剩余前缀设置"
+        elif [[ -n "$prefix" ]]; then
             new_services+=("/${prefix}/|${host}|${port}|${prefix}")
         else
             new_services+=("/${default_prefix}/|${host}|${port}|${default_prefix}")
@@ -404,7 +415,7 @@ issue_domain_certs() {
         else
             info "申请证书: ${domain}..."
             ${acme_sh} --issue --server letsencrypt -d "${domain}" \
-                --webroot /var/www/html --force 2>/dev/null || {
+                --webroot /var/www/html --force || {
                 warn "证书申请失败: ${domain}（DNS 未配置，可稍后手动申请）"
                 continue
             }
