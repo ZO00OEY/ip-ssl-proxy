@@ -391,37 +391,29 @@ issue_domain_certs() {
     local acme_sh="${HOME}/.acme.sh/acme.sh"
     mkdir -p /var/www/html
 
-    local domain_args=(-d "$DOMAIN")
-    local count=1
+    # 每个域名单独申请，一个失败不影响其他
     for svc in "${SERVICES_LIST[@]}"; do
         IFS='|' read -r path h port sub <<< "$svc"
         [[ -z "$sub" ]] && continue
-        domain_args+=(-d "${sub}.${DOMAIN}")
-        count=$((count + 1))
+        local domain="${sub}.${DOMAIN}"
+        local cert_dir="${HOME}/.acme.sh/${domain}_ecc"
+
+        if [[ -f "${cert_dir}/fullchain.cer" ]]; then
+            info "证书已存在: ${domain}，检查续期..."
+            ${acme_sh} --cron -d "${domain}" 2>/dev/null || true
+        else
+            info "申请证书: ${domain}..."
+            ${acme_sh} --issue --server letsencrypt -d "${domain}" \
+                --webroot /var/www/html --force 2>/dev/null || {
+                warn "证书申请失败: ${domain}（DNS 未配置，可稍后手动申请）"
+                continue
+            }
+            info "证书申请成功: ${domain}"
+        fi
+
+        ${acme_sh} --install-cert -d "${domain}" \
+            --reloadcmd "systemctl reload caddy 2>/dev/null || true" 2>/dev/null || true
     done
-
-    local cert_dir="${HOME}/.acme.sh/${DOMAIN}_ecc"
-    DOMAIN_CERT_FILE="${cert_dir}/fullchain.cer"
-    DOMAIN_KEY_FILE="${cert_dir}/${DOMAIN}.key"
-
-    if [[ -f "$DOMAIN_CERT_FILE" ]]; then
-        info "域名证书已存在: ${DOMAIN}（覆盖 ${count} 个域名），检查续期..."
-        ${acme_sh} --cron -d "${DOMAIN}" 2>/dev/null || true
-    else
-        info "申请域名证书: ${DOMAIN}（覆盖 ${count} 个域名）..."
-        ${acme_sh} --issue --server letsencrypt \
-            "${domain_args[@]}" \
-            --webroot /var/www/html --force 2>/dev/null || {
-            warn "域名证书申请失败（DNS 未配置？可稍后重试）"
-            DOMAIN_CERT_FILE=""
-            DOMAIN_KEY_FILE=""
-            return
-        }
-        info "域名证书申请成功！"
-    fi
-
-    ${acme_sh} --install-cert -d "${DOMAIN}" \
-        --reloadcmd "systemctl reload caddy 2>/dev/null || true" 2>/dev/null || true
 }
 
 # ---- 生成根页面 HTML ----
@@ -660,15 +652,16 @@ ROUTE
             [[ -z "$sub" ]] && continue
 
             local subdomain="${sub}.${DOMAIN}"
+            local sub_cert_dir="${HOME}/.acme.sh/${subdomain}_ecc"
             cat >> "$caddyfile" <<ROUTE
 
 # ${subdomain} → ${host}:${port}
 ${subdomain} {
 ROUTE
-            # 有域名证书则显式指定，否则让 Caddy 自动 SSL
-            if [[ -n "${DOMAIN_CERT_FILE:-}" ]] && [[ -f "$DOMAIN_CERT_FILE" ]]; then
+            # 有独立证书则显式指定，否则让 Caddy 自动 SSL
+            if [[ -f "${sub_cert_dir}/fullchain.cer" ]]; then
                 cat >> "$caddyfile" <<ROUTE
-    tls ${DOMAIN_CERT_FILE} ${DOMAIN_KEY_FILE}
+    tls ${sub_cert_dir}/fullchain.cer ${sub_cert_dir}/${subdomain}.key
 
 ROUTE
             fi
