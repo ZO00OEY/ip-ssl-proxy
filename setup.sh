@@ -656,25 +656,199 @@ print_summary_domain() {
 }
 
 # ============================================================
-# 子域名管理
+# 模式 3: 配对模式（IP + 域名双入口）
+# ============================================================
+mode_paired() {
+    check_root
+    detect_os
+    install_deps
+    detect_ip
+    prompt_ip
+    prompt_domain
+    install_acme
+    install_caddy
+
+    # 确保 IP 证书
+    start_temp_caddy
+    issue_ip_cert
+    stop_temp_caddy
+
+    # 生成并启动配对配置
+    configure_caddy_paired
+    gen_root_html "https://${DOMAIN}"
+    start_caddy "https://${DOMAIN}"
+
+    # 交互式添加服务
+    paired_add_services
+}
+
+configure_caddy_paired() {
+    local caddyfile="/etc/caddy/Caddyfile"
+    local routes_ip_dir="/etc/caddy/routes-ip.d"
+    local routes_domain_dir="/etc/caddy/routes-domain.d"
+    local sub_dir="/etc/caddy/subdomains.d"
+
+    info "生成 Caddy 配置（配对模式）: ${caddyfile}"
+    mkdir -p /etc/caddy "$routes_ip_dir" "$routes_domain_dir" "$sub_dir"
+
+    cat > "$caddyfile" <<CADDYEOF
+# Caddy + SSL 配对模式 - 由 setup.sh 自动生成
+# IP: ${PUBLIC_IP}  域名: ${DOMAIN}
+
+{
+    admin off
+}
+
+# -------- 端口 80: ACME 验证 --------
+:80 {
+    @acme {
+        path /.well-known/acme-challenge/*
+    }
+    handle @acme {
+        root * /var/www/html
+        file_server
+    }
+    handle {
+        root * /var/www/html
+        file_server
+    }
+}
+
+# -------- IP 证书入口 --------
+${PUBLIC_IP}:443 {
+    tls ${CERT_FILE} ${KEY_FILE}
+
+    import ${routes_ip_dir}/*.conf
+
+    handle / {
+        root * /var/www/html
+        file_server
+    }
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 50mb
+            roll_keep 3
+        }
+    }
+}
+
+# -------- 域名入口（Caddy 自动签发证书）-------
+${DOMAIN} {
+    import ${routes_domain_dir}/*.conf
+
+    handle / {
+        root * /var/www/html
+        file_server
+    }
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 50mb
+            roll_keep 3
+        }
+    }
+}
+
+import ${sub_dir}/*.conf
+CADDYEOF
+    info "配对 Caddyfile 已生成"
+}
+
+paired_add_services() {
+    local routes_ip_dir="/etc/caddy/routes-ip.d"
+    local routes_domain_dir="/etc/caddy/routes-domain.d"
+    local sub_dir="/etc/caddy/subdomains.d"
+
+    echo ""
+    echo -e "${YELLOW}-----------------------------------------${NC}"
+    echo -e "${YELLOW}  添加服务（可多次添加，留空名称结束）${NC}"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
+
+    while true; do
+        echo ""
+        echo -n "  服务名称（如: sillytavern，留空结束）: "
+        read -r SVC_NAME </dev/tty 2>/dev/null || true
+        SVC_NAME="$(printf '%s' "$SVC_NAME" | LC_ALL=C tr -cd 'a-zA-Z0-9_-')"
+        [[ -z "$SVC_NAME" ]] && break
+
+        echo -n "  后端端口（如: 8000）: "
+        read -r SVC_PORT </dev/tty 2>/dev/null || true
+        SVC_PORT="$(printf '%s' "$SVC_PORT" | LC_ALL=C tr -cd '0-9')"
+
+        if [[ -z "$SVC_PORT" ]]; then
+            error "端口不能为空"
+            continue
+        fi
+
+        info "添加: /${SVC_NAME}/ → :${SVC_PORT}"
+        echo "  入口:"
+        echo "    https://${PUBLIC_IP}/${SVC_NAME}/"
+        echo "    https://${DOMAIN}/${SVC_NAME}/"
+        echo "    https://${SVC_NAME}.${DOMAIN}/"
+
+        # IP 路径路由
+        cat > "${routes_ip_dir}/${SVC_NAME}.conf" <<ROUTE
+    handle_path /${SVC_NAME}/* {
+        reverse_proxy 127.0.0.1:${SVC_PORT} {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+ROUTE
+
+        # 域名路径路由
+        cp "${routes_ip_dir}/${SVC_NAME}.conf" "${routes_domain_dir}/${SVC_NAME}.conf"
+
+        # 子域名
+        cat > "${sub_dir}/${SVC_NAME}.conf" <<ROUTE
+${SVC_NAME}.${DOMAIN} {
+    reverse_proxy 127.0.0.1:${SVC_PORT} {
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-For {remote_host}
+    }
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 50mb
+            roll_keep 3
+        }
+    }
+}
+ROUTE
+
+        info "${SVC_NAME} 已添加"
+    done
+
+    # 重载 Caddy
+    if ls "${routes_ip_dir}"/*.conf &>/dev/null 2>&1 || ls "${sub_dir}"/*.conf &>/dev/null 2>&1; then
+        info "重载 Caddy..."
+        if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null 2>&1; then
+            systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
+        else
+            caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true
+        fi
+        info "配对模式部署完成！"
+    else
+        warn "未添加任何服务，请重新运行模式 3"
+    fi
+}
+
+# ============================================================
+# 模式 4: 子域名管理（原模式 3）
 # ============================================================
 
 # ---- 列出已有子域名 ----
 list_subdomains() {
-    local caddyfile="/etc/caddy/Caddyfile"
+    local sub_dir="/etc/caddy/subdomains.d"
     local found=()
 
-    if [[ -f "$caddyfile" ]]; then
-        while IFS= read -r line; do
-            if [[ "$line" == *".${DOMAIN}"* ]] && [[ ! "$line" == "${DOMAIN}"* ]]; then
-                local sub
-                sub=$(echo "$line" | awk '{print $1}')
-                [[ -z "$sub" ]] && continue
-                local port
-                port=$(grep -A5 "^${sub} " "$caddyfile" 2>/dev/null | grep "reverse_proxy" | grep -oP ':\K\d+' | head -1 || echo "?")
-                found+=("$sub (端口 ${port})")
-            fi
-        done < "$caddyfile"
+    if [[ -d "$sub_dir" ]]; then
+        for f in "$sub_dir"/*.conf; do
+            [[ -f "$f" ]] || continue
+            local sub
+            sub=$(basename "$f" .conf)
+            local port
+            port=$(grep -oP ':\K\d+' "$f" 2>/dev/null | head -1 || echo "?")
+            found+=("${sub}.${DOMAIN} (端口 ${port})")
+        done
     fi
 
     if [[ ${#found[@]} -eq 0 ]]; then
@@ -691,18 +865,20 @@ list_subdomains() {
 add_subdomain_to_caddy() {
     local sub_domain="${1}"
     local port="${2}"
+    local sub_prefix="${sub_domain%%.${DOMAIN}}"
+    local sub_dir="/etc/caddy/subdomains.d"
     local caddyfile="/etc/caddy/Caddyfile"
 
+    mkdir -p "$sub_dir"
+
     # 检查是否已存在
-    if grep -q "^${sub_domain} " "$caddyfile" 2>/dev/null; then
-        warn "子域名 ${sub_domain} 已在 Caddyfile 中，跳过添加"
+    if [[ -f "${sub_dir}/${sub_prefix}.conf" ]]; then
+        warn "子域名 ${sub_domain} 已存在，跳过添加"
         return 0
     fi
 
-    info "添加子域名到 Caddyfile: ${sub_domain} → :${port}"
-    cat >> "$caddyfile" <<ROUTE
-
-# subdomain: ${sub_domain%%.${DOMAIN}} → :${port}
+    info "添加子域名: ${sub_domain} → :${port}（Caddy 将自动签发证书）"
+    cat > "${sub_dir}/${sub_prefix}.conf" <<ROUTE
 ${sub_domain} {
     reverse_proxy 127.0.0.1:${port} {
         header_up X-Forwarded-Proto https
@@ -716,6 +892,14 @@ ${sub_domain} {
     }
 }
 ROUTE
+
+    # 确保主 Caddyfile 有 import 子域名目录
+    if ! grep -q "import.*subdomains.d" "$caddyfile" 2>/dev/null; then
+        echo "" >> "$caddyfile"
+        echo "import /etc/caddy/subdomains.d/*.conf" >> "$caddyfile"
+        info "已在 Caddyfile 添加子域名引用"
+    fi
+
     info "已添加 ${sub_domain} → :${port}"
 }
 
@@ -761,7 +945,7 @@ mode_domain() {
 }
 
 # ============================================================
-# 模式 3: 子域名管理
+# 模式 4: 子域名管理
 # ============================================================
 mode_subdomain() {
     check_root
@@ -832,11 +1016,12 @@ show_menu() {
     echo ""
     echo "  1  拉取IP证书  [二选一]"
     echo "  2  拉取域名证书  [二选一]"
-    echo "  3  添加子域名"
+    echo "  3  配对模式（IP + 域名双入口）"
+    echo "  4  添加子域名"
     echo "  0  退出"
     echo ""
     echo "----------------------------------------"
-    echo -n "  请输入 [1/2/3/0]: "
+    echo -n "  请输入 [1/2/3/4/0]: "
 }
 
 # ============================================================
@@ -850,9 +1035,10 @@ main() {
     case "$CHOICE" in
         1) mode_ip ;;
         2) mode_domain ;;
-        3) mode_subdomain ;;
+        3) mode_paired ;;
+        4) mode_subdomain ;;
         q|Q|0) info "已退出" ; exit 0 ;;
-        *) error "无效选项，请输入 1、2、3 或 0" ; exit 1 ;;
+        *) error "无效选项，请输入 1、2、3、4 或 0" ; exit 1 ;;
     esac
 }
 
