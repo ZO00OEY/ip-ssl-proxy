@@ -363,19 +363,21 @@ configure_caddy() {
     info "生成 Caddy 配置（${mode} 模式）: ${caddyfile}"
     mkdir -p /etc/caddy
 
-    local site_addr tls_line section_title
+    local site_addr tls_line section_title mode_label
     if [[ "$mode" == "ip" ]]; then
         site_addr="${PUBLIC_IP}:443"
         tls_line="    tls ${CERT_FILE} ${KEY_FILE}"
         section_title="IP 证书反代"
+        mode_label="IP"
     else
         site_addr="${DOMAIN}"
         tls_line=""
         section_title="域名反代（Caddy 自动签发证书）"
+        mode_label="域名"
     fi
 
     cat > "$caddyfile" <<CADDYEOF
-# Caddy + SSL ${mode} 模式 - 由 setup.sh 自动生成
+# Caddy + SSL ${mode_label}模式 - 由 setup.sh 自动生成
 CADDYEOF
     if [[ "$mode" == "ip" ]]; then
         echo "# 公网 IP: ${PUBLIC_IP}" >> "$caddyfile"
@@ -554,9 +556,9 @@ mode_paired() {
         exit 1
     fi
 
-    # 检测当前配置模式
+    # 检测当前配置模式（兼容新旧格式）
     local mode_type=""
-    if grep -q "IP 模式" "$caddyfile" 2>/dev/null; then
+    if grep -qiE "ip\s*模式" "$caddyfile" 2>/dev/null; then
         mode_type="ip"
         PUBLIC_IP=$(grep -oP '公网 IP:\s*\K[\d.]+' "$caddyfile" 2>/dev/null || true)
         if [[ -z "${PUBLIC_IP:-}" ]]; then
