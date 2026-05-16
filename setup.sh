@@ -202,8 +202,11 @@ prompt_prefixes() {
             read -r prefix </dev/tty 2>/dev/null || true
             prefix="$(printf '%s' "$prefix" | LC_ALL=C tr -cd 'a-zA-Z0-9')"
             [[ -n "$prefix" ]] && def="$prefix"
+            new_services+=("/${def}/|${h}|${p}|${def}")
+        else
+            # 未选中则保持原始配置不变
+            new_services+=("${SERVICES_LIST[$i]}")
         fi
-        new_services+=("/${def}/|${h}|${p}|${def}")
     done
     SERVICES_LIST=("${new_services[@]}")
 
