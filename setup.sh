@@ -199,21 +199,23 @@ install_caddy() {
 
 # ---- 启动临时 Caddy（仅端口 80，用于首次证书申请） ----
 start_temp_caddy() {
-    # 如果证书已存在，不需要启动临时 Caddy
     local cert_dir="${HOME}/.acme.sh/${PUBLIC_IP}_ecc"
     if [[ -f "${cert_dir}/fullchain.cer" ]] && [[ -f "${cert_dir}/${PUBLIC_IP}.key" ]]; then
         return
     fi
 
-    # 检查端口 80 是否被占用
+    # 停止可能已运行的 Caddy（apt 安装后会自动启动），
+    # 换成我们自己的临时配置来响应 ACME 验证
+    if pgrep -x caddy &>/dev/null; then
+        info "停止已运行的 Caddy，启动临时配置用于证书验证..."
+        systemctl stop caddy 2>/dev/null || true
+        caddy stop 2>/dev/null || true
+        sleep 1
+    fi
+
     if command -v ss &>/dev/null; then
         if ss -tlnp 2>/dev/null | grep -q ':80 '; then
-            # 可能已有 Caddy 在运行（重跑脚本），直接返回
-            if pgrep -x caddy &>/dev/null; then
-                info "Caddy 已在运行，跳过临时启动"
-                return
-            fi
-            error "端口 80 被占用，请释放后重试"
+            error "端口 80 被占用，无法启动临时 Caddy"
             error "执行: lsof -ti:80 | xargs kill -9"
             exit 1
         fi
