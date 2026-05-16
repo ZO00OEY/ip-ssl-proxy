@@ -21,7 +21,7 @@ set -euo pipefail
 
 DEFAULT_SERVICES=(
     "/couchdb/|127.0.0.1|5984|"
-    "/sillytavern/|127.0.0.1|8000|st"
+    "/st/|127.0.0.1|8000|st"
     "/mihomo/|127.0.0.1|9097|"
     "/reader/|127.0.0.1|4396|"
     "/hermes/|127.0.0.1|9119|"
@@ -396,8 +396,16 @@ gen_root_html() {
         IFS='|' read -r p h port _ <<< "$svc"
         local name="${p//\//}"
         [[ -z "$name" ]] && continue
+
+        # 为 SillyTavern 显示全称，并提示子路径下 CSS 错乱
+        local note=""
+        if [[ "$port" == "8000" ]]; then
+            name="SillyTavern"
+            note=" <span style=\"color:#f87171;font-size:0.75rem;\">（通过本方式使用酒馆会CSS错乱）</span>"
+        fi
+
         cards+="        <div class=\"card\">
-          <div class=\"card-title\">${name}</div>
+          <div class=\"card-title\">${name}${note}</div>
           <div class=\"card-links\"><a href=\"${base_url}${p}\" class=\"link\">${base_url}${p}</a></div>
         </div>
 "

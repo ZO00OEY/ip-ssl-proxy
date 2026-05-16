@@ -63,7 +63,7 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
 
 ```
 https://IP/couchdb/  →  CouchDB (5984)
-https://IP/sillytavern/  →  SillyTavern (8000)
+https://IP/st/  →  SillyTavern (8000)
 https://IP/mihomo/   →  Mihomo 面板 (9097)
 https://IP/reader/   →  阅读 (4396)
 https://IP/hermes/   →  Hermes Agent (9119)
@@ -77,7 +77,7 @@ Caddy 同时监听 80（HTTP→HTTPS 自动跳转）和 443（SSL 加密 + 反�
 
 ```
 https://sillytavern.你的域名/  →  SillyTavern ✅ 一切正常
-https://IP/sillytavern/       →  SillyTavern ❌ CSS 错乱（但仍可用）
+https://IP/st/       →  SillyTavern ❌ CSS 错乱（但仍可用）
 ```
 
 配置 DNS A 记录后，Caddy 自动为子域名签发可信 SSL 证书，浏览器不再报"不安全"。
@@ -117,7 +117,7 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
 | 路径（默认） | 路径（设域名后） | 目标地址 | 说明 |
 |------|------|----------|------|
 | `/couchdb/` | `/couchdb/` | `127.0.0.1:5984` | Obsidian Livesync |
-| `/sillytavern/` | `/st/` | `127.0.0.1:8000` | SillyTavern |
+| `/st/` | `/st/` | `127.0.0.1:8000` | SillyTavern |
 | `/mihomo/` | `/mihomo/` | `127.0.0.1:9097` | Mihomo 面板 |
 | `/reader/` | `/reader/` | `127.0.0.1:4396` | 阅读 |
 | `/hermes/` | `/hermes/` | `127.0.0.1:9119` | Hermes Agent |
