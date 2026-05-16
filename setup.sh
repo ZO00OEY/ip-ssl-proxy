@@ -43,7 +43,6 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; }
 # ---- 清理函数（Ctrl+C 时停止临时 Caddy）----
 cleanup() {
     stop_temp_caddy 2>/dev/null || true
-    ensure_caddy_running 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -302,17 +301,6 @@ stop_temp_caddy() {
     fi
     caddy stop --config /etc/caddy/Caddyfile.temp 2>/dev/null || true
     rm -f /etc/caddy/Caddyfile.temp
-    ensure_caddy_running
-}
-
-# ---- 确保系统 Caddy 在运行（从临时 Caddy 恢复）----
-ensure_caddy_running() {
-    if pgrep -x caddy &>/dev/null; then
-        return 0
-    fi
-    if command -v systemctl &>/dev/null && systemctl cat caddy.service &>/dev/null 2>&1; then
-        systemctl start caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
-    fi
 }
 
 # ---- 申请 IP 证书 ----
@@ -437,8 +425,12 @@ CADDYEOF
 ROUTE
     done
 
+    # 只在有自定义路由文件时才加 import（空 glob 会导致 Caddy 报错）
+    mkdir -p /etc/caddy/routes-custom.d
+    if ls /etc/caddy/routes-custom.d/*.conf &>/dev/null 2>&1; then
+        echo "    import /etc/caddy/routes-custom.d/*.conf" >> "$caddyfile"
+    fi
     cat >> "$caddyfile" <<ROUTE
-    import /etc/caddy/routes-custom.d/*.conf
     handle / {
         root * /var/www/html
         file_server
@@ -602,10 +594,10 @@ add_custom_routes() {
     local custom_dir="/etc/caddy/routes-custom.d"
     mkdir -p "$custom_dir"
 
-    # 确保 Caddyfile 有 import
+    # 确保 Caddyfile 有 import 行，没有则自动添加
     if ! grep -q "routes-custom.d" /etc/caddy/Caddyfile 2>/dev/null; then
-        error "当前 Caddyfile 不支持自定义路由，请重新运行模式 1"
-        exit 1
+        info "Caddyfile 缺少自定义路由引用，自动添加..."
+        sed -i '/^    handle \/ {/i\    import /etc/caddy/routes-custom.d/*.conf' /etc/caddy/Caddyfile
     fi
 
     echo ""
@@ -762,11 +754,10 @@ add_custom_subdomains() {
     fi
     DOMAIN="$domain"
 
-    # 确保 Caddyfile 有 import 子域名目录
+    # 确保 Caddyfile 有 import 子域名目录（插入到 handle / 之前）
     if ! grep -q "subdomains.d" "$caddyfile" 2>/dev/null; then
-        echo "" >> "$caddyfile"
-        echo "import /etc/caddy/subdomains.d/*.conf" >> "$caddyfile"
-        info "已在 Caddyfile 添加子域名引用"
+        info "Caddyfile 缺少子域名引用，自动添加..."
+        sed -i '/^    handle \/ {/i\    import /etc/caddy/subdomains.d/*.conf' "$caddyfile"
     fi
 
     echo ""
