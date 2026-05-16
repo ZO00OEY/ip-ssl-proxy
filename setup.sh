@@ -390,7 +390,7 @@ issue_cert() {
 
     if [[ -f "$CERT_FILE" ]] && [[ -f "$KEY_FILE" ]]; then
         info "证书已存在，检查续期 ..."
-        ${acme_sh} --cron 2>/dev/null || true
+        ${acme_sh} --cron -d "${PUBLIC_IP}" 2>/dev/null || true
     else
         info "申请 Let's Encrypt IP 证书（webroot 模式）..."
         info "Caddy 已在端口 80 响应验证请求"
