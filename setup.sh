@@ -1,21 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ============================================
-# Caddy + IP SSL 一键部署脚本
-# 为公网 IP 配置 Caddy 反向代理与 HTTPS
+# ============================================================
+# Caddy + IP SSL 多服务反向代理一键部署脚本
+#
+# 功能: 为公网 IP 申请 SSL 证书，部署 Caddy 反向代理，
+#       通过路径路由将 HTTPS 流量转发到多个本地服务。
 #
 # 用法:
 #   bash <(curl -fsSL https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh)
-#   或:
-#   BACKEND_PORT=3000 bash setup.sh
-# ============================================
+#
+# 自定义服务列表:
+#   SERVICES="/app1/|3000,/app2/|4000" bash setup.sh
+#   SERVICES="/app1/|192.168.1.2|3000,/app2/|4000" bash setup.sh
+# ============================================================
 
-# ---- 配置（可通过环境变量覆盖） ----
-BACKEND_PORT="${BACKEND_PORT:-5984}"
-BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
-PUBLIC_IP="${PUBLIC_IP:-}"
-SKIP_CADDY_INSTALL="${SKIP_CADDY_INSTALL:-}"
+# ============================================================
+# 服务配置
+# ============================================================
+# 格式: "路径|后端主机|端口"
+# 路径建议用 /name/ 格式（末尾保留斜杠）
+# 主机默认为 127.0.0.1，可省略
+#
+# 可通过 SERVICES 环境变量覆盖，格式同上，用逗号分隔
+# ============================================================
+
+DEFAULT_SERVICES=(
+    "/couchdb/|127.0.0.1|5984"    # Obsidian Livesync (CouchDB)
+    "/tavern/|127.0.0.1|8000"     # SillyTavern 酒馆
+    "/mihomo/|127.0.0.1|9097"     # Mihomo 控制面板
+    "/reader/|127.0.0.1|4396"     # 阅读
+    "/hermes/|127.0.0.1|9119"     # Hermes Agent
+)
+
+# ============================================================
 
 # ---- 颜色 ----
 RED='\033[0;31m'
@@ -27,7 +45,29 @@ info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
-# ============================================
+# ---- 解析服务配置 ----
+parse_services() {
+    if [[ -n "${SERVICES:-}" ]]; then
+        info "使用环境变量 SERVICES 中的自定义服务配置"
+        IFS=',' read -ra SVC_TMP <<< "$SERVICES"
+        SERVICES_LIST=()
+        for svc in "${SVC_TMP[@]}"; do
+            # 去除前后空格
+            svc="${svc## }"
+            svc="${svc%% }"
+            SERVICES_LIST+=("$svc")
+        done
+    else
+        SERVICES_LIST=("${DEFAULT_SERVICES[@]}")
+    fi
+
+    info "服务列表:"
+    for svc in "${SERVICES_LIST[@]}"; do
+        IFS='|' read -r p h port <<< "$svc"
+        [[ -z "$h" ]] && h="127.0.0.1"
+        echo "    ${p}  →  ${h}:${port}"
+    done
+}
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -37,6 +77,7 @@ check_root() {
 }
 
 detect_ip() {
+    PUBLIC_IP="${PUBLIC_IP:-}"
     if [[ -z "$PUBLIC_IP" ]]; then
         info "检测公网 IP ..."
         PUBLIC_IP=$(curl -s --max-time 10 https://api.ipify.org || curl -s --max-time 10 https://icanhazip.com)
@@ -50,11 +91,9 @@ detect_ip() {
 }
 
 detect_os() {
-    info "检测操作系统 ..."
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
         OS_ID="${ID}"
-        OS_LIKE="${ID_LIKE:-}"
     else
         OS_ID="unknown"
     fi
@@ -99,8 +138,6 @@ install_acme() {
     fi
     info "安装 acme.sh ..."
     curl -fsSL https://get.acme.sh | bash
-    # 确保 acme.sh 可用
-    export LE_WORKING_DIR="${HOME}/.acme.sh"
     if [[ -f "${HOME}/.acme.sh/acme.sh.env" ]]; then
         set +euo pipefail
         . "${HOME}/.acme.sh/acme.sh.env"
@@ -112,32 +149,28 @@ install_acme() {
 issue_cert() {
     local acme_sh="${HOME}/.acme.sh/acme.sh"
     local cert_dir="${HOME}/.acme.sh/${PUBLIC_IP}_ecc"
-    local cert_file="${cert_dir}/fullchain.cer"
-    local key_file="${cert_dir}/${PUBLIC_IP}.key"
+    CERT_FILE="${cert_dir}/fullchain.cer"
+    KEY_FILE="${cert_dir}/${PUBLIC_IP}.key"
 
-    CERT_FILE="$cert_file"
-    KEY_FILE="$key_file"
-
-    # 检查端口 80 可用性
+    # 检查端口 80 可用性，如有占用则临时停止
     if command -v ss &>/dev/null; then
         if ss -tlnp 2>/dev/null | grep -q ':80 '; then
-            warn "端口 80 被占用，将尝试停止占用程序"
+            warn "端口 80 被占用，尝试自动停止占用进程 ..."
             local pid
             pid=$(ss -tlnp 2>/dev/null | grep ':80 ' | grep -oP 'pid=\K[0-9]+' || true)
             if [[ -n "$pid" ]]; then
-                warn "占用端口 80 的进程 PID: ${pid}，将临时停止"
                 kill "$pid" 2>/dev/null || true
                 sleep 1
             fi
         fi
     fi
 
-    if [[ -f "$cert_file" ]] && [[ -f "$key_file" ]]; then
+    if [[ -f "$CERT_FILE" ]] && [[ -f "$KEY_FILE" ]]; then
         info "证书已存在，检查续期 ..."
         ${acme_sh} --cron -d "${PUBLIC_IP}" 2>/dev/null || true
     else
         info "申请 Let's Encrypt IP 证书 ..."
-        info "这需要端口 80 对外可访问（acme.sh 会启动临时 HTTP 服务器进行验证）"
+        info "（需要端口 80 对外可访问，acme.sh 将启动临时服务器验证）"
         ${acme_sh} --issue \
             --server letsencrypt \
             -d "${PUBLIC_IP}" \
@@ -145,9 +178,9 @@ issue_cert() {
             --standalone \
             --force || {
                 error "证书申请失败，常见原因："
-                error "1. 端口 80 被防火墙阻挡（云服务商安全组/iptables）"
+                error "1. 端口 80 被防火墙阻挡（安全组/iptables 需放行）"
                 error "2. 公网 IP ${PUBLIC_IP} 并非本机公网 IP"
-                error "3. 有程序占用了端口 80"
+                error "3. 端口 80 被占用且未能自动释放"
                 error ""
                 error "请检查后重试，或手动运行："
                 error "  ~/.acme.sh/acme.sh --issue --server letsencrypt -d ${PUBLIC_IP} --certificate-profile shortlived --standalone"
@@ -169,7 +202,6 @@ install_caddy() {
 
     info "安装 Caddy ..."
 
-    # 优先用包管理器安装
     local installed=0
     case "${OS_ID}" in
         ubuntu|debian)
@@ -189,26 +221,20 @@ install_caddy() {
             ;;
     esac
 
-    # 包管理器安装失败时，回退到二进制安装
     if [[ "$installed" -ne 1 ]]; then
         info "通过二进制包安装 Caddy ..."
         local caddy_url="https://github.com/caddyserver/caddy/releases/latest/download/caddy_linux_amd64.tar.gz"
         curl -fsSL "$caddy_url" -o /tmp/caddy.tar.gz
-        tar xzf /tmp/caddy.tar.gz -C /tmp caddy 2>/dev/null || {
-            # 如果 tar 在 Windows 上不行，尝试手动
-            cd /tmp && gzip -dc caddy.tar.gz | tar xf - caddy
-        }
+        tar xzf /tmp/caddy.tar.gz -C /tmp caddy 2>/dev/null || (cd /tmp && gzip -dc caddy.tar.gz | tar xf - caddy)
         mv /tmp/caddy /usr/bin/caddy
         chmod +x /usr/bin/caddy
 
-        # 创建 caddy 用户和数据目录
         if ! id -u caddy &>/dev/null; then
             useradd -r -d /var/lib/caddy -s /sbin/nologin caddy 2>/dev/null || true
         fi
         mkdir -p /var/lib/caddy /etc/caddy /var/log/caddy
         chown -R caddy:caddy /var/lib/caddy /var/log/caddy 2>/dev/null || true
 
-        # 安装 systemd 单元
         if command -v systemctl &>/dev/null; then
             curl -fsSL https://raw.githubusercontent.com/caddyserver/dist/master/init/caddy.service \
                 -o /etc/systemd/system/caddy.service 2>/dev/null || true
@@ -219,29 +245,98 @@ install_caddy() {
     info "Caddy 安装完成: $(caddy version)"
 }
 
+# ---- 生成根页面 HTML ----
+gen_root_html() {
+    local html="/var/www/html/index.html"
+    mkdir -p /var/www/html
+
+    local list_items=""
+    for svc in "${SERVICES_LIST[@]}"; do
+        IFS='|' read -r p h port <<< "$svc"
+        local name="${p//\//}"
+        [[ -z "$name" ]] && continue
+        list_items+="        <li><a href=\"${p}\">${name}</a> <span style=\"color:#666;\">(${h}:${port})</span></li>\\n"
+    done
+
+    cat > "$html" <<HTML
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caddy + IP SSL</title>
+<style>
+body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 60px auto; padding: 0 20px; line-height: 1.6; }
+h1 { color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
+ul { list-style: none; padding: 0; }
+li { padding: 8px 12px; margin: 4px 0; background: #f5f5f5; border-radius: 6px; }
+li:hover { background: #e8f5e9; }
+a { color: #2e7d32; text-decoration: none; font-weight: 500; }
+.ip { color: #888; font-size: 0.9em; }
+.footer { margin-top: 40px; font-size: 0.85em; color: #999; }
+</style>
+</head>
+<body>
+<h1>Caddy 反向代理运行中</h1>
+<p class="ip">${PUBLIC_IP} — IP SSL</p>
+<ul>
+${list_items}
+</ul>
+<div class="footer">
+  证书自动续期 &middot; 路径路由反向代理
+</div>
+</body>
+</html>
+HTML
+}
+
+# ---- 生成 Caddy 配置 ----
 configure_caddy() {
     local caddyfile="/etc/caddy/Caddyfile"
     info "生成 Caddy 配置: ${caddyfile}"
 
     mkdir -p /etc/caddy
 
+    # 写入 Caddyfile 头部
     cat > "$caddyfile" <<CADDYEOF
-# Caddy + IP SSL 配置 - 由 setup.sh 自动生成
-# 后端服务: ${BACKEND_HOST}:${BACKEND_PORT}
+# Caddy + IP SSL 多服务配置 - 由 setup.sh 自动生成
 # 公网 IP: ${PUBLIC_IP}
 
 {
-    # 关闭 admin API
     admin off
 }
 
-# HTTPS - 使用 IP 证书
 :443 {
     tls ${CERT_FILE} ${KEY_FILE}
 
-    reverse_proxy ${BACKEND_HOST}:${BACKEND_PORT} {
-        header_up X-Forwarded-Proto https
-        header_up X-Forwarded-For {remote_host}
+CADDYEOF
+
+    # 写入每个服务的路由
+    for svc in "${SERVICES_LIST[@]}"; do
+        IFS='|' read -r path host port <<< "$svc"
+        [[ -z "$host" ]] && host="127.0.0.1"
+        local strip_path="${path%/}"  # 去掉末尾斜杠，用于 redirect
+
+        cat >> "$caddyfile" <<ROUTE
+
+    # ${strip_path} → ${host}:${port}
+    redir ${strip_path} ${path} 308
+    handle_path ${path}* {
+        reverse_proxy ${host}:${port} {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+ROUTE
+    done
+
+    # 写入根路径处理（服务列表页面）
+    cat >> "$caddyfile" <<ROUTE
+
+    # 根路径 - 服务列表页
+    handle / {
+        root * /var/www/html
+        file_server
     }
 
     log {
@@ -251,23 +346,22 @@ configure_caddy() {
         }
     }
 }
-CADDYEOF
+ROUTE
 
-    info "Caddy 配置已生成"
+    info "Caddy 配置已生成，共 ${#SERVICES_LIST[@]} 个服务路由"
 }
 
 setup_cron_renew() {
     info "配置证书自动续期 ..."
-
     local acme_sh="${HOME}/.acme.sh/acme.sh"
 
-    # acme.sh 已有自己的 crontab，确保它存在
-    if ! (crontab -l 2>/dev/null | grep -q 'acme.sh'); then
-        info "添加 acme.sh 续期 crontab ..."
+    # 每天凌晨 3 点检查续期
+    if ! (crontab -l 2>/dev/null | grep -q 'acme.sh.*--cron'); then
         (crontab -l 2>/dev/null || true; echo "0 3 * * * ${acme_sh} --cron > /dev/null 2>&1") | crontab -
+        info "已添加续期 crontab"
+    else
+        info "续期 crontab 已存在"
     fi
-
-    info "自动续期已配置（每日检查，仅在证书即将过期时续期）"
 }
 
 start_caddy() {
@@ -280,7 +374,6 @@ start_caddy() {
             return 1
         }
     else
-        # 直接启动
         caddy stop --config /etc/caddy/Caddyfile 2>/dev/null || true
         sleep 1
         nohup caddy run --config /etc/caddy/Caddyfile --adapter caddyfile > /var/log/caddy/caddy.log 2>&1 &
@@ -293,7 +386,7 @@ start_caddy() {
     http_code=$(curl -s -o /dev/null -w "%{http_code}" "https://${PUBLIC_IP}" --insecure --max-time 5 2>/dev/null || echo "000")
 
     if [[ "$http_code" != "000" ]]; then
-        info "Caddy 启动成功，HTTPS 响应码: ${http_code}"
+        info "Caddy 启动成功，HTTPS 根页面响应码: ${http_code}"
     else
         warn "Caddy 已启动但 HTTPS 暂时无响应，请稍后检查: curl -k https://${PUBLIC_IP}"
     fi
@@ -302,46 +395,53 @@ start_caddy() {
 print_summary() {
     echo ""
     echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  Caddy + IP SSL 部署完成！${NC}"
+    echo -e "${GREEN}  Caddy + IP SSL 多服务部署完成！${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
-    echo "  访问地址:  https://${PUBLIC_IP}"
-    echo "  后端服务:  ${BACKEND_HOST}:${BACKEND_PORT}"
+    echo -e "  入口地址:  ${GREEN}https://${PUBLIC_IP}${NC}"
+    echo ""
+    echo -e "  ${YELLOW}可用服务:${NC}"
+    for svc in "${SERVICES_LIST[@]}"; do
+        IFS='|' read -r path h port <<< "$svc"
+        [[ -z "$h" ]] && h="127.0.0.1"
+        echo -e "    https://${PUBLIC_IP}${path}  →  ${h}:${port}"
+    done
     echo ""
     echo "  Caddy 配置:   /etc/caddy/Caddyfile"
     echo "  SSL 证书:     ${CERT_FILE}"
     echo "  SSL 私钥:     ${KEY_FILE}"
     echo "  访问日志:     /var/log/caddy/access.log"
     echo ""
-    echo "  证书续期: 每日自动检查（short-lived, ~6.5 天有效）"
-    echo ""
     echo -e "${YELLOW}  重要提示：${NC}"
-    echo "  1. 请确保云服务商安全组已放行端口 443"
-    echo "  2. 端口 80 需放行（acme.sh 续期验证用）"
-    echo "  3. 如果后端服务地址变了，编辑 /etc/caddy/Caddyfile 后执行:"
+    echo "  1. 云服务商安全组需放行端口 443 (HTTPS) 和 80 (证书续期)"
+    echo "  2. 某些 Web 应用（如 SillyTavern）需在应用内开启反代模式:"
+    echo "     SillyTavern: config.yaml 中设置 enableProxy: true"
+    echo "  3. 修改服务列表后，编辑 /etc/caddy/Caddyfile 然后执行:"
     echo "     systemctl reload caddy"
     echo ""
-    echo -e "${GREEN}  一键测试: curl -k https://${PUBLIC_IP}${NC}"
+    echo -e "${GREEN}  一键测试: curl -k https://${PUBLIC_IP}/couchdb/${NC}"
     echo ""
 }
 
-# ============================================
+# ============================================================
 # Main
-# ============================================
-
+# ============================================================
 main() {
     echo ""
     echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  Caddy + IP SSL 一键部署脚本${NC}"
+    echo -e "${GREEN}  Caddy + IP SSL 多服务反向代理${NC}"
+    echo -e "${GREEN}  一键部署脚本${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
 
     check_root
+    parse_services
     install_deps
     detect_ip
     install_acme
     issue_cert
     install_caddy
+    gen_root_html
     configure_caddy
     setup_cron_renew
     start_caddy
