@@ -663,11 +663,11 @@ print_summary() {
     echo ""
     if [[ -n "$DOMAIN" ]]; then
         echo -e "  ${GREEN}域名访问已启用！${NC}"
-        echo "  请确保域名 DNS 已配置以下 A 记录:"
+        echo "  请确保以下子域名已添加 DNS A 记录指向本机 IP:"
         for svc in "${SERVICES_LIST[@]}"; do
             IFS='|' read -r path h port sub <<< "$svc"
             [[ -z "$sub" ]] && continue
-            echo "    ${sub}  →  ${PUBLIC_IP}"
+            echo "    ${sub}.${DOMAIN}  ->  ${PUBLIC_IP}"
         done
         echo ""
     fi
