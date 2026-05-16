@@ -388,6 +388,14 @@ issue_cert() {
 
     mkdir -p /var/www/html
 
+    # 清理 acme.sh 中非 IP 证书的残留记录（已改用 Caddy 自动 SSL 处理域名）
+    for dir in "${HOME}"/.acme.sh/*_ecc/; do
+        [[ ! -d "$dir" ]] && continue
+        local b="$(basename "$dir")"
+        [[ "$b" == "${PUBLIC_IP}_ecc" ]] && continue
+        rm -rf "$dir" 2>/dev/null || true
+    done
+
     if [[ -f "$CERT_FILE" ]] && [[ -f "$KEY_FILE" ]]; then
         info "证书已存在，检查续期 ..."
         ${acme_sh} --cron -d "${PUBLIC_IP}" 2>/dev/null || true
@@ -416,14 +424,6 @@ issue_cert() {
     # 设置续期后重载 Caddy（webroot 模式）
     ${acme_sh} --install-cert -d "${PUBLIC_IP}" \
         --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
-
-    # 清理 acme.sh 中残留的无效域名记录（之前失败的申请留下的）
-    for dir in "${HOME}"/.acme.sh/*_ecc/; do
-        [[ ! -d "$dir" ]] && continue
-        local b="$(basename "$dir")"
-        [[ "$b" == "${PUBLIC_IP}_ecc" ]] && continue
-        rm -rf "$dir" 2>/dev/null || true
-    done
 }
 
 # ---- 生成根页面 HTML ----
@@ -675,7 +675,12 @@ ROUTE
 }
 ROUTE
         done
-        info "已添加子域名路由（共 $(grep -c '\.'${DOMAIN}'' "$caddyfile" 2>/dev/null || echo 0) 个）"
+        local sub_count=0
+        for svc in "${SERVICES_LIST[@]}"; do
+            IFS='|' read -r _ _ _ s <<< "$svc"
+            [[ -n "$s" ]] && sub_count=$((sub_count + 1))
+        done
+        info "已添加子域名路由（共 ${sub_count} 个）"
     fi
 
     info "Caddy 配置已生成，共 ${#SERVICES_LIST[@]} 个服务路由"
@@ -731,16 +736,25 @@ print_summary() {
     echo -e "  入口地址:  ${GREEN}https://${PUBLIC_IP}${NC}"
     echo -e "  HTTP 跳转:  http://${PUBLIC_IP}  →  https://${PUBLIC_IP}"
     echo ""
-    echo -e "  ${YELLOW}可用服务:${NC}"
+    local sub_list=()
+    local path_list=()
     for svc in "${SERVICES_LIST[@]}"; do
         IFS='|' read -r path h port sub <<< "$svc"
         [[ -z "$h" ]] && h="127.0.0.1"
-        local line="    https://${PUBLIC_IP}${path}  →  ${h}:${port}"
         if [[ -n "$sub" && -n "$DOMAIN" ]]; then
-            line+="  |  https://${sub}.${DOMAIN}/"
+            sub_list+=("    https://${sub}.${DOMAIN}/  →  ${h}:${port}")
+            path_list+=("    https://${PUBLIC_IP}${path}  →  ${h}:${port}  |  https://${sub}.${DOMAIN}/")
+        else
+            path_list+=("    https://${PUBLIC_IP}${path}  →  ${h}:${port}")
         fi
-        echo -e "$line"
     done
+    if [[ ${#sub_list[@]} -gt 0 ]]; then
+        echo -e "  ${YELLOW}子域名路由（${#sub_list[@]} 个）:${NC}"
+        for l in "${sub_list[@]}"; do echo -e "$l"; done
+        echo ""
+    fi
+    echo -e "  ${YELLOW}子路径路由（${#path_list[@]} 个）:${NC}"
+    for l in "${path_list[@]}"; do echo -e "$l"; done
     echo ""
     if [[ -n "$DOMAIN" ]]; then
         echo -e "  ${GREEN}域名访问已启用！${NC}"
