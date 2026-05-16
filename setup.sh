@@ -40,6 +40,12 @@ info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
+# ---- 清理函数（Ctrl+C 时停止临时 Caddy）----
+cleanup() {
+    stop_temp_caddy 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
 # ---- 解析服务配置 ----
 parse_services() {
     if [[ -n "${SERVICES:-}" ]]; then
@@ -130,7 +136,7 @@ detect_os() {
 
 install_deps() {
     info "安装必要依赖 ..."
-    local pkgs="curl socat openssl"
+    local pkgs="curl openssl"
     case "${OS_ID}" in
         ubuntu|debian)
             apt-get update -qq
@@ -152,7 +158,7 @@ install_deps() {
             elif command -v yum &>/dev/null; then
                 yum install -y $pkgs
             else
-                warn "未知系统，请手动安装: curl, socat, openssl"
+                warn "未知系统，请手动安装: curl, openssl"
             fi
             ;;
     esac
@@ -217,7 +223,14 @@ install_caddy() {
 
     if [[ "$installed" -ne 1 ]]; then
         info "通过二进制包安装 Caddy ..."
-        local caddy_url="https://github.com/caddyserver/caddy/releases/latest/download/caddy_linux_amd64.tar.gz"
+        local arch caddy_url
+        arch=$(uname -m)
+        case "$arch" in
+            x86_64)  caddy_url="https://github.com/caddyserver/caddy/releases/latest/download/caddy_linux_amd64.tar.gz" ;;
+            aarch64) caddy_url="https://github.com/caddyserver/caddy/releases/latest/download/caddy_linux_arm64.tar.gz" ;;
+            armv7l)  caddy_url="https://github.com/caddyserver/caddy/releases/latest/download/caddy_linux_armv7.tar.gz" ;;
+            *)       error "不支持的架构: $arch，请手动安装 Caddy" ; exit 1 ;;
+        esac
         curl -fsSL "$caddy_url" -o /tmp/caddy.tar.gz
         tar xzf /tmp/caddy.tar.gz -C /tmp caddy 2>/dev/null || (cd /tmp && gzip -dc caddy.tar.gz | tar xf - caddy)
         mv /tmp/caddy /usr/bin/caddy
@@ -339,94 +352,38 @@ gen_root_html() {
             base_url="https://${PUBLIC_IP}"
         fi
     fi
-
-    local html="/var/www/html/index.html"
     mkdir -p /var/www/html
-
-    local cards=""
-    for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r p h port _ <<< "$svc"
-        local name="${p//\//}"
-        [[ -z "$name" ]] && continue
-
-        # 为 SillyTavern 显示全称，并提示子路径下 CSS 错乱
-        local note=""
-        if [[ "$port" == "8000" ]]; then
-            name="SillyTavern"
-            note=" <span style=\"color:#f87171;font-size:0.75rem;\">（通过本方式使用酒馆会CSS错乱）</span>"
-        fi
-
-        cards+="        <div class=\"card\">
-          <div class=\"card-title\">${name}${note}</div>
-          <div class=\"card-links\"><a href=\"${base_url}${p}\" class=\"link\">${base_url}${p}</a></div>
-        </div>
-"
-    done
-
-    cat > "$html" <<HTML
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Caddy + SSL</title>
-<style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-  color: #e2e8f0;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 2rem;
-}
-.container { width: 100%; max-width: 560px; }
-.header { text-align: center; margin-bottom: 2.5rem; }
-.header h1 { font-size: 1.5rem; font-weight: 600; color: #f1f5f9; letter-spacing: -0.02em; }
-.cards { display: flex; flex-direction: column; gap: 0.75rem; }
-.card {
-  background: rgba(30, 41, 59, 0.6);
-  backdrop-filter: blur(8px);
-  border: 1px solid rgba(148, 163, 184, 0.1);
-  border-radius: 12px;
-  padding: 1rem 1.25rem;
-}
-.card-title {
-  font-size: 0.8rem; font-weight: 500; color: #94a3b8;
-  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;
-}
-.link {
-  font-size: 0.9rem; color: #38bdf8; text-decoration: none; word-break: break-all;
-}
-.link:hover { color: #7dd3fc; }
-.footer {
-  text-align: center; margin-top: 2.5rem; font-size: 0.75rem; color: #475569;
-}
-</style>
-</head>
-<body>
-<div class="container">
-  <div class="header"><h1>本站导航</h1></div>
-  <div class="cards">${cards}</div>
-  <div class="footer">SSL 加密 &middot; 证书自动续期</div>
-</div>
-</body>
-</html>
-HTML
+    write_nav_html "/var/www/html/index.html" "$base_url" "${SERVICES_LIST[@]}"
 }
 
-# ---- 生成 Caddy 配置（IP 模式）----
-configure_caddy_ip() {
+# ---- 生成 Caddy 配置（mode: ip|domain）----
+configure_caddy() {
+    local mode="${1}"
     local caddyfile="/etc/caddy/Caddyfile"
-    info "生成 Caddy 配置（IP 模式）: ${caddyfile}"
+    info "生成 Caddy 配置（${mode} 模式）: ${caddyfile}"
     mkdir -p /etc/caddy
 
+    local site_addr tls_line section_title
+    if [[ "$mode" == "ip" ]]; then
+        site_addr="${PUBLIC_IP}:443"
+        tls_line="    tls ${CERT_FILE} ${KEY_FILE}"
+        section_title="IP 证书反代"
+    else
+        site_addr="${DOMAIN}"
+        tls_line=""
+        section_title="域名反代（Caddy 自动签发证书）"
+    fi
+
     cat > "$caddyfile" <<CADDYEOF
-# Caddy + SSL IP 模式 - 由 setup.sh 自动生成
-# 公网 IP: ${PUBLIC_IP}
+# Caddy + SSL ${mode} 模式 - 由 setup.sh 自动生成
+CADDYEOF
+    if [[ "$mode" == "ip" ]]; then
+        echo "# 公网 IP: ${PUBLIC_IP}" >> "$caddyfile"
+    else
+        echo "# 域名: ${DOMAIN}" >> "$caddyfile"
+    fi
+
+    cat >> "$caddyfile" <<CADDYEOF
 
 {
     admin off
@@ -434,23 +391,18 @@ configure_caddy_ip() {
 
 # -------- 端口 80: ACME 验证 --------
 :80 {
-    @acme {
-        path /.well-known/acme-challenge/*
-    }
-    handle @acme {
-        root * /var/www/html
-        file_server
-    }
-    handle {
-        root * /var/www/html
-        file_server
-    }
+    @acme { path /.well-known/acme-challenge/* }
+    handle @acme { root * /var/www/html; file_server }
+    handle { root * /var/www/html; file_server }
 }
 
-# -------- 端口 443: IP 证书反代 --------
-${PUBLIC_IP}:443 {
-    tls ${CERT_FILE} ${KEY_FILE}
+# -------- ${section_title} --------
+${site_addr} {
 CADDYEOF
+
+    if [[ "$mode" == "ip" ]]; then
+        echo "${tls_line}" >> "$caddyfile"
+    fi
 
     for svc in "${SERVICES_LIST[@]}"; do
         IFS='|' read -r path host port _ <<< "$svc"
@@ -470,76 +422,7 @@ ROUTE
 
     cat >> "$caddyfile" <<ROUTE
     import /etc/caddy/routes-custom.d/*.conf
-    handle / {
-        root * /var/www/html
-        file_server
-    }
-    log {
-        output file /var/log/caddy/access.log {
-            roll_size 50mb
-            roll_keep 3
-        }
-    }
-}
-ROUTE
-    info "Caddy 配置已生成，共 ${#SERVICES_LIST[@]} 个服务路由"
-}
-
-# ---- 生成 Caddy 配置（域名模式）----
-configure_caddy_domain() {
-    local caddyfile="/etc/caddy/Caddyfile"
-    info "生成 Caddy 配置（域名模式）: ${caddyfile}"
-    mkdir -p /etc/caddy
-
-    cat > "$caddyfile" <<CADDYEOF
-# Caddy + SSL 域名模式 - 由 setup.sh 自动生成
-# 域名: ${DOMAIN}
-
-{
-    admin off
-}
-
-# -------- 端口 80: ACME 验证 --------
-:80 {
-    @acme {
-        path /.well-known/acme-challenge/*
-    }
-    handle @acme {
-        root * /var/www/html
-        file_server
-    }
-    handle {
-        root * /var/www/html
-        file_server
-    }
-}
-
-# -------- 域名反代（Caddy 自动签发证书）-------
-${DOMAIN} {
-CADDYEOF
-
-    for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r path host port _ <<< "$svc"
-        [[ -z "$host" ]] && host="127.0.0.1"
-        local strip_path="${path%/}"
-        cat >> "$caddyfile" <<ROUTE
-    # ${strip_path} → ${host}:${port}
-    redir ${strip_path} ${path} 308
-    handle_path ${path}* {
-        reverse_proxy ${host}:${port} {
-            header_up X-Forwarded-Proto https
-            header_up X-Forwarded-For {remote_host}
-        }
-    }
-ROUTE
-    done
-
-    cat >> "$caddyfile" <<ROUTE
-    import /etc/caddy/routes-custom.d/*.conf
-    handle / {
-        root * /var/www/html
-        file_server
-    }
+    handle / { root * /var/www/html; file_server }
     log {
         output file /var/log/caddy/access.log {
             roll_size 50mb
@@ -556,7 +439,7 @@ setup_cron_renew_ip() {
     info "配置 IP 证书自动续期 ..."
     local acme_sh="${HOME}/.acme.sh/acme.sh"
     if ! (crontab -l 2>/dev/null | grep -q "acme.sh.*--cron.*${PUBLIC_IP}"); then
-        (crontab -l 2>/dev/null || true; echo "0 3 * * * ${acme_sh} --cron -d ${PUBLIC_IP} > /dev/null 2>&1") | crontab -
+        (crontab -l 2>/dev/null || true; echo "0 3 * * * ${acme_sh} --cron -d ${PUBLIC_IP} >> /var/log/caddy/acme-renew.log 2>&1") | crontab -
         info "已添加续期 crontab（每日 3:00 检查 IP 证书）"
     else
         info "续期 crontab 已存在"
@@ -568,7 +451,7 @@ start_caddy() {
     local verify_url="${1:-}"
     info "启动 Caddy 服务 ..."
 
-    if command -v systemctl &>/dev/null && [[ -f /etc/systemd/system/caddy.service ]]; then
+    if command -v systemctl &>/dev/null && systemctl cat caddy.service &>/dev/null; then
         systemctl enable caddy 2>/dev/null || true
         systemctl restart caddy 2>/dev/null || systemctl start caddy 2>/dev/null || {
             error "systemctl 启动 Caddy 失败，请检查: journalctl -u caddy -n 50"
@@ -602,58 +485,51 @@ start_caddy() {
 }
 
 # ---- 输出摘要 ----
-print_summary_ip() {
-    echo ""
-    echo "========================================"
-    echo "  IP 证书模式部署完成！"
-    echo "========================================"
-    echo ""
-    echo "  入口地址:  https://${PUBLIC_IP}"
-    echo ""
-    echo "  可用服务:"
-    for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r path h port _ <<< "$svc"
-        [[ -z "$h" ]] && h="127.0.0.1"
-        echo "    https://${PUBLIC_IP}${path}  →  ${h}:${port}"
-    done
-    echo ""
-    echo "  Caddy 配置:   /etc/caddy/Caddyfile"
-    echo "  SSL 证书:     ${CERT_FILE}"
-    echo "  访问日志:     /var/log/caddy/access.log"
-    echo "  导航页面:     /var/www/html/index.html"
-    echo ""
-    echo "  重要提示："
-    echo "  1. 云服务商安全组需放行端口 443 (HTTPS) 和 80 (HTTP)"
-    echo ""
-    echo "  一键测试: curl -k https://${PUBLIC_IP}/couchdb/"
-    echo ""
-}
+print_summary() {
+    local mode="${1}"
+    local entry_url ssl_line extra_tip test_url
+    if [[ "$mode" == "ip" ]]; then
+        entry_url="https://${PUBLIC_IP}"
+        ssl_line="  SSL 证书:     ${CERT_FILE}"
+        extra_tip=""
+        test_url="curl -k https://${PUBLIC_IP}/couchdb/"
+    else
+        entry_url="https://${DOMAIN}"
+        ssl_line="  SSL 证书:     Caddy 自动管理（Let's Encrypt）"
+        extra_tip="  2. 确保域名 ${DOMAIN} 的 DNS A 记录指向本机 IP"
+        test_url="curl -k https://${DOMAIN}/couchdb/"
+    fi
 
-print_summary_domain() {
+    local mode_label
+    if [[ "$mode" == "ip" ]]; then
+        mode_label="IP"
+    else
+        mode_label="域名"
+    fi
     echo ""
     echo "========================================"
-    echo "  域名证书模式部署完成！"
+    echo "  ${mode_label}证书模式部署完成！"
     echo "========================================"
     echo ""
-    echo "  入口地址:  https://${DOMAIN}"
+    echo "  入口地址:  ${entry_url}"
     echo ""
     echo "  可用服务:"
     for svc in "${SERVICES_LIST[@]}"; do
         IFS='|' read -r path h port _ <<< "$svc"
         [[ -z "$h" ]] && h="127.0.0.1"
-        echo "    https://${DOMAIN}${path}  →  ${h}:${port}"
+        echo "    ${entry_url}${path}  →  ${h}:${port}"
     done
     echo ""
     echo "  Caddy 配置:   /etc/caddy/Caddyfile"
-    echo "  SSL 证书:     Caddy 自动管理（Let's Encrypt）"
+    echo "${ssl_line}"
     echo "  访问日志:     /var/log/caddy/access.log"
     echo "  导航页面:     /var/www/html/index.html"
     echo ""
     echo "  重要提示："
     echo "  1. 云服务商安全组需放行端口 443 (HTTPS) 和 80 (HTTP)"
-    echo "  2. 确保域名 ${DOMAIN} 的 DNS A 记录指向本机 IP"
+    [[ -n "$extra_tip" ]] && echo "${extra_tip}"
     echo ""
-    echo "  一键测试: curl -k https://${DOMAIN}/couchdb/"
+    echo "  一键测试: ${test_url}"
     echo ""
 }
 
@@ -673,6 +549,11 @@ mode_paired() {
     local mode_type=""
     if grep -q "IP 模式" "$caddyfile" 2>/dev/null; then
         mode_type="ip"
+        PUBLIC_IP=$(grep -oP '公网 IP:\s*\K[\d.]+' "$caddyfile" 2>/dev/null || true)
+        if [[ -z "${PUBLIC_IP:-}" ]]; then
+            error "无法从 Caddyfile 提取公网 IP，请重新运行模式 1"
+            exit 1
+        fi
     elif grep -q "域名模式" "$caddyfile" 2>/dev/null; then
         mode_type="domain"
     else
@@ -753,7 +634,12 @@ rebuild_nav_ip() {
     local html="/var/www/html/index.html"
     mkdir -p /var/www/html
 
-    local -a all_services=("${DEFAULT_SERVICES[@]}")
+    local -a all_services=()
+    if [[ -f /etc/caddy/.services.conf ]]; then
+        mapfile -t all_services < /etc/caddy/.services.conf
+    else
+        all_services=("${DEFAULT_SERVICES[@]}")
+    fi
     local name port
     for f in "$custom_dir"/*.conf; do
         [[ -f "$f" ]] || continue
@@ -862,13 +748,17 @@ rebuild_nav_domain() {
     local html="/var/www/html/index.html"
     mkdir -p /var/www/html
 
-    # 默认服务（域名路径）+ 子域名
+    # 已配置服务（域名路径）+ 子域名
     local -a all_services=()
     local name port
 
-    for svc in "${DEFAULT_SERVICES[@]}"; do
-        all_services+=("$svc")
-    done
+    if [[ -f /etc/caddy/.services.conf ]]; then
+        mapfile -t all_services < /etc/caddy/.services.conf
+    else
+        for svc in "${DEFAULT_SERVICES[@]}"; do
+            all_services+=("$svc")
+        done
+    fi
 
     for f in "$sub_dir"/*.conf; do
         [[ -f "$f" ]] || continue
@@ -914,7 +804,11 @@ write_nav_html() {
     shift 2
     local cards_content=""
     local raw_mode=false
-    [[ "$1" == "--raw" ]] && { raw_mode=true; shift; }
+    # 检测 --raw: 最后一个参数是 --raw 表示 $@ 是预制 HTML
+    if [[ $# -gt 0 && "${!#}" == "--raw" ]]; then
+        raw_mode=true
+        set -- "${@:1:$(($#-1))}"
+    fi
 
     if [[ "$raw_mode" == "true" ]]; then
         cards_content="$*"
@@ -994,7 +888,7 @@ HTML
 
 reload_caddy() {
     info "重载 Caddy..."
-    if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null 2>&1; then
+    if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null; then
         systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
     else
         caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true
@@ -1008,6 +902,7 @@ reload_caddy() {
 mode_ip() {
     check_root
     parse_services
+    printf '%s\n' "${SERVICES_LIST[@]}" > /etc/caddy/.services.conf
     detect_os
     install_deps
     detect_ip
@@ -1020,10 +915,10 @@ mode_ip() {
     stop_temp_caddy
 
     gen_root_html "https://${PUBLIC_IP}"
-    configure_caddy_ip
+    configure_caddy "ip"
     setup_cron_renew_ip
     start_caddy "https://${PUBLIC_IP}"
-    print_summary_ip
+    print_summary "ip"
 }
 
 # ============================================================
@@ -1032,15 +927,16 @@ mode_ip() {
 mode_domain() {
     check_root
     parse_services
+    printf '%s\n' "${SERVICES_LIST[@]}" > /etc/caddy/.services.conf
     detect_os
     install_deps
     prompt_domain
     install_caddy
 
     gen_root_html "https://${DOMAIN}"
-    configure_caddy_domain
+    configure_caddy "domain"
     start_caddy "https://${DOMAIN}"
-    print_summary_domain
+    print_summary "domain"
 }
 
 # ============================================================
