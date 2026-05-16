@@ -266,16 +266,17 @@ start_temp_caddy() {
         sleep 1
     fi
 
+    # 确保端口 80 可用，供临时 Caddy 做 ACME 验证
     if command -v ss &>/dev/null; then
         if ss -tlnp 2>/dev/null | grep -q ':80 '; then
-            warn "端口 80 被占用，尝试强制释放..."
+            warn "端口 80 被占用，强制释放..."
             systemctl stop caddy 2>/dev/null || true
             caddy stop 2>/dev/null || true
             sleep 2
             if ss -tlnp 2>/dev/null | grep -q ':80 '; then
-                error "端口 80 仍被占用，无法启动临时 Caddy"
-                error "请手动执行: systemctl stop caddy && fuser -k 80/tcp"
-                exit 1
+                warn "systemctl 未完全释放，使用 fuser 强制释放..."
+                fuser -k 80/tcp 2>/dev/null || true
+                sleep 1
             fi
         fi
     fi
