@@ -388,10 +388,6 @@ CADDYEOF
 
     cat >> "$caddyfile" <<CADDYEOF
 
-{
-    admin off
-}
-
 # -------- 端口 80: ACME 验证 --------
 :80 {
     @acme path /.well-known/acme-challenge/*
@@ -1021,10 +1017,10 @@ HTML
 reload_caddy() {
     info "重载 Caddy..."
     local ok=true
-    if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null; then
-        systemctl reload caddy 2>&1 || { error "重载失败，尝试重启..."; systemctl restart caddy 2>&1 || { error "重启也失败了，请手动检查: journalctl -u caddy -n 20"; ok=false; }; }
+    if command -v systemctl &>/dev/null; then
+        systemctl reload caddy 2>&1 || systemctl restart caddy 2>&1 || { error "重载失败，请手动检查: journalctl -u caddy -n 20 --no-pager"; ok=false; }
     else
-        caddy reload --config /etc/caddy/Caddyfile 2>&1 || { error "重载失败"; ok=false; }
+        caddy reload --config /etc/caddy/Caddyfile 2>&1 || { caddy stop 2>/dev/null; caddy run --config /etc/caddy/Caddyfile 2>&1 & }
     fi
     $ok && info "完成！"
 }
