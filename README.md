@@ -16,6 +16,11 @@ cd ip-ssl-proxy && bash setup.sh
 
 首次运行弹出菜单：
 
+**更新脚本：**
+```bash
+cd ~/ip-ssl-proxy && git pull && bash setup.sh
+```
+
 ```
 ========================================
   Caddy + SSL 多服务反向代理
