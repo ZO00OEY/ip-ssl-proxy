@@ -250,6 +250,27 @@ install_caddy() {
     fi
 
     info "Caddy 安装完成: $(caddy version)"
+    ensure_caddy_root
+}
+
+# ---- 强制 Caddy 以 root 运行（避免日志/权限问题）----
+ensure_caddy_root() {
+    if ! command -v systemctl &>/dev/null; then
+        return
+    fi
+    local drop_in="/etc/systemd/system/caddy.service.d/root-user.conf"
+    if [[ -f "$drop_in" ]]; then
+        return
+    fi
+    info "配置 Caddy systemd 以 root 运行..."
+    mkdir -p /etc/systemd/system/caddy.service.d
+    cat > "$drop_in" <<'EOF'
+[Service]
+User=root
+Group=root
+EOF
+    systemctl daemon-reload
+    info "Caddy 已配置为 root 运行"
 }
 
 # ---- 临时 Caddy（端口 80，用于证书申请） ----
@@ -463,11 +484,13 @@ start_caddy() {
     local verify_url="${1:-}"
     info "启动 Caddy 服务 ..."
 
-    # 确保日志目录权限正确（Caddy systemd 以 caddy 用户运行）
+    # 确保日志目录权限正确（配置 systemd 以 root 运行规避日志权限问题）
     mkdir -p /var/log/caddy
     if id -u caddy &>/dev/null; then
         chown -R caddy:caddy /var/log/caddy 2>/dev/null || true
     fi
+
+    ensure_caddy_root
 
     if command -v systemctl &>/dev/null && systemctl cat caddy.service &>/dev/null; then
         # 先杀手动运行的 Caddy（如果有），避免端口冲突
@@ -1034,6 +1057,8 @@ reload_caddy() {
     if id -u caddy &>/dev/null; then
         chown -R caddy:caddy /var/log/caddy 2>/dev/null || true
     fi
+
+    ensure_caddy_root
 
     if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null; then
         systemctl reload caddy 2>&1 || systemctl restart caddy 2>&1 || ok=false
