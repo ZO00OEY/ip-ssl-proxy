@@ -1018,7 +1018,12 @@ reload_caddy() {
     info "重载 Caddy..."
     local ok=true
     if command -v systemctl &>/dev/null; then
-        systemctl reload caddy 2>&1 || systemctl restart caddy 2>&1 || { error "重载失败，请手动检查: journalctl -u caddy -n 20 --no-pager"; ok=false; }
+        if systemctl is-active caddy &>/dev/null; then
+            systemctl reload caddy 2>&1 || { error "重载失败，尝试重启..."; systemctl restart caddy 2>&1 || { error "重启失败: journalctl -u caddy -n 20"; ok=false; }; }
+        else
+            warn "caddy 服务未在 systemd 中运行，尝试直接启动..."
+            systemctl restart caddy 2>&1 || caddy reload --config /etc/caddy/Caddyfile 2>&1 || { error "启动失败"; ok=false; }
+        fi
     else
         caddy reload --config /etc/caddy/Caddyfile 2>&1 || { caddy stop 2>/dev/null; caddy run --config /etc/caddy/Caddyfile 2>&1 & }
     fi
