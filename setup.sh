@@ -601,17 +601,62 @@ configure_caddy() {
         root * /var/www/html
         file_server
     }
-    # 其余请求跳转 HTTPS
+    # 其余请求跳转 HTTPS（保留原始域名）
     handle {
-        redir https://${PUBLIC_IP}{uri} permanent
+        redir https://{host}{uri} permanent
     }
 }
 
-# -------- 端口 443: HTTPS + 反向代理 --------
-:443 {
+CADDYEOF
+
+    # ---- 子域名区块（如果设置了 DOMAIN）----
+    # 放在 IP 区块之前，确保 SNI 匹配时优先使用域名的自动 SSL 证书
+    if [[ -n "$DOMAIN" ]]; then
+        for svc in "${SERVICES_LIST[@]}"; do
+            IFS='|' read -r path host port sub <<< "$svc"
+            [[ -z "$host" ]] && host="127.0.0.1"
+            [[ -z "$sub" ]] && continue
+
+            local subdomain="${sub}.${DOMAIN}"
+            cat >> "$caddyfile" <<ROUTE
+
+# ${subdomain} → ${host}:${port}
+${subdomain} {
+    reverse_proxy ${host}:${port} {
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-For {remote_host}
+    }
+}
+ROUTE
+        done
+        # 主域名 → 导航页
+        cat >> "$caddyfile" <<ROUTE
+
+# ${DOMAIN} → 导航页
+${DOMAIN} {
+    root * /var/www/html
+    file_server
+}
+ROUTE
+    fi
+
+    # 统计子域名数量
+    local sub_count=0
+    if [[ -n "$DOMAIN" ]]; then
+        for svc in "${SERVICES_LIST[@]}"; do
+            IFS='|' read -r _ _ _ s <<< "$svc"
+            [[ -n "$s" ]] && sub_count=$((sub_count + 1))
+        done
+        info "已添加子域名路由（共 ${sub_count} 个），主域名 ${DOMAIN} → 导航页"
+    fi
+
+    # -------- IP 证书区块（仅监听 ${PUBLIC_IP}）--------
+    cat >> "$caddyfile" <<ROUTE
+
+${PUBLIC_IP}:443 {
     tls ${CERT_FILE} ${KEY_FILE}
 
-CADDYEOF
+ROUTE
 
     # 写入每个服务的路由
     for svc in "${SERVICES_LIST[@]}"; do
@@ -620,7 +665,6 @@ CADDYEOF
         local strip_path="${path%/}"
 
         cat >> "$caddyfile" <<ROUTE
-
     # ${strip_path} → ${host}:${port}
     redir ${strip_path} ${path} 308
     handle_path ${path}* {
@@ -650,42 +694,6 @@ ROUTE
 }
 
 ROUTE
-
-    # ---- 子域名区块（如果设置了 DOMAIN） ----
-    if [[ -n "$DOMAIN" ]]; then
-        for svc in "${SERVICES_LIST[@]}"; do
-            IFS='|' read -r path host port sub <<< "$svc"
-            [[ -z "$host" ]] && host="127.0.0.1"
-            [[ -z "$sub" ]] && continue
-
-            local subdomain="${sub}.${DOMAIN}"
-            cat >> "$caddyfile" <<ROUTE
-
-# ${subdomain} → ${host}:${port}
-${subdomain} {
-    reverse_proxy ${host}:${port} {
-        header_up X-Forwarded-Proto https
-        header_up X-Forwarded-For {remote_host}
-    }
-}
-ROUTE
-        done
-        # 主域名 → 导航页
-        cat >> "$caddyfile" <<ROUTE
-
-# ${DOMAIN} → 导航页
-${DOMAIN} {
-    root * /var/www/html
-    file_server
-}
-ROUTE
-        local sub_count=0
-        for svc in "${SERVICES_LIST[@]}"; do
-            IFS='|' read -r _ _ _ s <<< "$svc"
-            [[ -n "$s" ]] && sub_count=$((sub_count + 1))
-        done
-        info "已添加子域名路由（共 ${sub_count} 个），主域名 ${DOMAIN} → 导航页"
-    fi
 
     info "Caddy 配置已生成，共 ${#SERVICES_LIST[@]} 个服务路由"
 }
