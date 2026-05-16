@@ -97,19 +97,18 @@ prompt_domain() {
     if [[ -z "${DOMAIN:-}" ]]; then
         echo ""
         echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-        echo -e "${YELLOW}│  Optional: enter your domain for subdomain HTTPS   │${NC}"
-        echo -e "${YELLOW}│  e.g. example.com                                  │${NC}"
-        echo -e "${YELLOW}│  Press Enter to skip, IP-only access               │${NC}"
+        echo -e "${YELLOW}│  可选：输入你的域名以启用子域名 HTTPS 访问          │${NC}"
+        echo -e "${YELLOW}│  格式如: example.com                               │${NC}"
+        echo -e "${YELLOW}│  留空直接回车则跳过，仅使用 IP 方式访问            │${NC}"
         echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
-        echo -n "  Domain: "
+        echo -n "  域名: "
         read -r DOMAIN </dev/tty 2>/dev/null || true
-        DOMAIN="${DOMAIN//[$'\r'$'\n']/}"
-        DOMAIN="${DOMAIN#"${DOMAIN%%[![:space:]]*}"}"
-        DOMAIN="${DOMAIN%"${DOMAIN##*[![:space:]]}"}"
+        # 严格清理：只保留字母、数字、点、横线
+        DOMAIN="$(printf '%s' "$DOMAIN" | LC_ALL=C tr -cd 'a-zA-Z0-9.-')"
         echo ""
     fi
     if [[ -n "$DOMAIN" ]]; then
-        echo -e "  ${GREEN}Domain set: ${DOMAIN}${NC}"
+        info "域名: ${DOMAIN}"
     fi
 }
 
