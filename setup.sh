@@ -31,10 +31,10 @@ DOMAIN="${DOMAIN:-}"
 PUBLIC_IP="${PUBLIC_IP:-}"
 
 # ---- 颜色 ----
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+RED=''
+GREEN=''
+YELLOW=''
+NC=''
 
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
@@ -73,10 +73,9 @@ check_root() {
 prompt_domain() {
     if [[ -z "${DOMAIN:-}" ]]; then
         echo ""
-        echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-        echo -e "${YELLOW}│  输入你的域名                                      │${NC}"
-        echo -e "${YELLOW}│  格式如: example.com                               │${NC}"
-        echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+        echo "-----------------------------------------"
+        echo "  输入你的域名 (例如: example.com)"
+        echo "-----------------------------------------"
         echo -n "  域名: "
         read -r DOMAIN </dev/tty 2>/dev/null || true
         DOMAIN="$(printf '%s' "$DOMAIN" | LC_ALL=C tr -cd 'a-zA-Z0-9.-')"
@@ -104,11 +103,11 @@ detect_ip() {
 
 prompt_ip() {
     echo ""
-    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  检测到公网 IP: ${PUBLIC_IP}${NC}"
-    echo -e "${YELLOW}│  如服务器使用 VPN，检测的可能不是服务器真实 IP    ${NC}"
-    echo -e "${YELLOW}│  回车确认使用，或输入正确的公网 IP                ${NC}"
-    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+    echo "-----------------------------------------"
+    echo "  检测到公网 IP: ${PUBLIC_IP}"
+    echo "  如服务器使用 VPN，检测的可能不是服务器真实 IP"
+    echo "  回车确认使用，或输入正确的公网 IP"
+    echo "-----------------------------------------"
     echo -n "  IP [${PUBLIC_IP}]: "
     read -r INPUT_IP </dev/tty 2>/dev/null || true
     if [[ -n "$INPUT_IP" ]]; then
@@ -299,9 +298,9 @@ issue_ip_cert() {
     KEY_FILE="${cert_dir}/${PUBLIC_IP}.key"
 
     echo ""
-    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  IP 证书（acme.sh）                                │${NC}"
-    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+    echo "-----------------------------------------"
+    echo "  IP 证书（acme.sh）"
+    echo "-----------------------------------------"
 
     mkdir -p /var/www/html
 
@@ -338,9 +337,9 @@ issue_domain_cert() {
     KEY_FILE="${cert_dir}/${DOMAIN}.key"
 
     echo ""
-    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  域名证书（acme.sh）                               │${NC}"
-    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+    echo "-----------------------------------------"
+    echo "  域名证书（acme.sh）"
+    echo "-----------------------------------------"
 
     mkdir -p /var/www/html
 
@@ -656,17 +655,17 @@ start_caddy() {
 # ---- 输出摘要 ----
 print_summary_ip() {
     echo ""
-    echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  IP 证书模式部署完成！${NC}"
-    echo -e "${GREEN}========================================${NC}"
+    echo "========================================"
+    echo "  IP 证书模式部署完成！"
+    echo "========================================"
     echo ""
-    echo -e "  入口地址:  ${GREEN}https://${PUBLIC_IP}${NC}"
+    echo "  入口地址:  https://${PUBLIC_IP}"
     echo ""
-    echo -e "  ${YELLOW}可用服务:${NC}"
+    echo "  可用服务:"
     for svc in "${SERVICES_LIST[@]}"; do
         IFS='|' read -r path h port _ <<< "$svc"
         [[ -z "$h" ]] && h="127.0.0.1"
-        echo -e "    https://${PUBLIC_IP}${path}  →  ${h}:${port}"
+        echo "    https://${PUBLIC_IP}${path}  →  ${h}:${port}"
     done
     echo ""
     echo "  Caddy 配置:   /etc/caddy/Caddyfile"
@@ -674,26 +673,26 @@ print_summary_ip() {
     echo "  访问日志:     /var/log/caddy/access.log"
     echo "  导航页面:     /var/www/html/index.html"
     echo ""
-    echo -e "${YELLOW}  重要提示：${NC}"
+    echo "  重要提示："
     echo "  1. 云服务商安全组需放行端口 443 (HTTPS) 和 80 (HTTP)"
     echo ""
-    echo -e "${GREEN}  一键测试: curl -k https://${PUBLIC_IP}/couchdb/${NC}"
+    echo "  一键测试: curl -k https://${PUBLIC_IP}/couchdb/"
     echo ""
 }
 
 print_summary_domain() {
     echo ""
-    echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  域名证书模式部署完成！${NC}"
-    echo -e "${GREEN}========================================${NC}"
+    echo "========================================"
+    echo "  域名证书模式部署完成！"
+    echo "========================================"
     echo ""
-    echo -e "  入口地址:  ${GREEN}https://${DOMAIN}${NC}"
+    echo "  入口地址:  https://${DOMAIN}"
     echo ""
-    echo -e "  ${YELLOW}可用服务:${NC}"
+    echo "  可用服务:"
     for svc in "${SERVICES_LIST[@]}"; do
         IFS='|' read -r path h port _ <<< "$svc"
         [[ -z "$h" ]] && h="127.0.0.1"
-        echo -e "    https://${DOMAIN}${path}  →  ${h}:${port}"
+        echo "    https://${DOMAIN}${path}  →  ${h}:${port}"
     done
     echo ""
     echo "  Caddy 配置:   /etc/caddy/Caddyfile"
@@ -701,11 +700,11 @@ print_summary_domain() {
     echo "  访问日志:     /var/log/caddy/access.log"
     echo "  导航页面:     /var/www/html/index.html"
     echo ""
-    echo -e "${YELLOW}  重要提示：${NC}"
+    echo "  重要提示："
     echo "  1. 云服务商安全组需放行端口 443 (HTTPS) 和 80 (HTTP)"
     echo "  2. 确保域名 ${DOMAIN} 的 DNS A 记录指向本机 IP"
     echo ""
-    echo -e "${GREEN}  一键测试: curl -k https://${DOMAIN}/couchdb/${NC}"
+    echo "  一键测试: curl -k https://${DOMAIN}/couchdb/"
     echo ""
 }
 
@@ -747,9 +746,9 @@ issue_subdomain_cert() {
     local acme_sh="${HOME}/.acme.sh/acme.sh"
 
     echo ""
-    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  子域名证书: ${sub_domain}${NC}"
-    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+    echo "-----------------------------------------"
+    echo "  子域名证书: ${sub_domain}"
+    echo "-----------------------------------------"
 
     local cert_dir="${HOME}/.acme.sh/${sub_domain}_ecc"
     local cert_file="${cert_dir}/fullchain.cer"
@@ -871,15 +870,15 @@ mode_subdomain() {
     fi
 
     echo ""
-    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  现有子域名证书                                      │${NC}"
-    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+    echo "-----------------------------------------"
+    echo "  现有子域名证书"
+    echo "-----------------------------------------"
     list_subdomains
 
     echo ""
-    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  添加新子域名                                      │${NC}"
-    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+    echo "-----------------------------------------"
+    echo "  添加新子域名"
+    echo "-----------------------------------------"
     echo -n "  子域名前缀（如: st → ${DOMAIN} 的 st.${DOMAIN}）: "
     read -r SUB_PREFIX </dev/tty 2>/dev/null || true
     SUB_PREFIX="$(printf '%s' "$SUB_PREFIX" | LC_ALL=C tr -cd 'a-zA-Z0-9-')"
@@ -928,22 +927,16 @@ mode_subdomain() {
 # ============================================================
 show_menu() {
     echo ""
-    echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  Caddy + SSL 多服务反向代理${NC}"
-    echo -e "${GREEN}========================================${NC}"
+    echo "========================================"
+    echo "  Caddy + SSL 多服务反向代理"
+    echo "========================================"
     echo ""
-    echo "  请选择运行模式:"
+    echo "  请选择需要的功能:"
     echo ""
-    echo "  ${GREEN}1${NC}  IP 证书模式"
-    echo "     为公网 IP 申请 SSL 证书，生成仅含 IP 的配置"
-    echo ""
-    echo "  ${GREEN}2${NC}  域名证书模式"
-    echo "     为域名申请 SSL 证书，生成仅含域名的配置"
-    echo ""
-    echo "  ${GREEN}3${NC}  子域名管理"
-    echo "     查看已有子域名证书，添加新的子域名"
-    echo ""
-    echo "  ${GREEN}q${NC}  退出"
+    echo "  1  拉取IP证书"
+    echo "  2  拉取域名证书"
+    echo "  3  添加子域名"
+    echo "  q  退出"
     echo ""
     echo -n "  请输入 [1/2/3/q]: "
 }
