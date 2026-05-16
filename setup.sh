@@ -6,6 +6,7 @@ set -euo pipefail
 #
 # 功能: 为公网 IP 申请 SSL 证书，部署 Caddy 反向代理，
 #       通过路径路由将 HTTPS 流量转发到多个本地服务。
+#       同时监听 80 端口做 HTTP → HTTPS 自动跳转。
 #
 # 用法:
 #   bash <(curl -fsSL https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh)
@@ -52,7 +53,6 @@ parse_services() {
         IFS=',' read -ra SVC_TMP <<< "$SERVICES"
         SERVICES_LIST=()
         for svc in "${SVC_TMP[@]}"; do
-            # 去除前后空格
             svc="${svc## }"
             svc="${svc%% }"
             SERVICES_LIST+=("$svc")
@@ -146,54 +146,6 @@ install_acme() {
     info "acme.sh 安装完成"
 }
 
-issue_cert() {
-    local acme_sh="${HOME}/.acme.sh/acme.sh"
-    local cert_dir="${HOME}/.acme.sh/${PUBLIC_IP}_ecc"
-    CERT_FILE="${cert_dir}/fullchain.cer"
-    KEY_FILE="${cert_dir}/${PUBLIC_IP}.key"
-
-    # 检查端口 80 可用性，如有占用则临时停止
-    if command -v ss &>/dev/null; then
-        if ss -tlnp 2>/dev/null | grep -q ':80 '; then
-            warn "端口 80 被占用，尝试自动停止占用进程 ..."
-            local pid
-            pid=$(ss -tlnp 2>/dev/null | grep ':80 ' | grep -oP 'pid=\K[0-9]+' || true)
-            if [[ -n "$pid" ]]; then
-                kill "$pid" 2>/dev/null || true
-                sleep 1
-            fi
-        fi
-    fi
-
-    if [[ -f "$CERT_FILE" ]] && [[ -f "$KEY_FILE" ]]; then
-        info "证书已存在，检查续期 ..."
-        ${acme_sh} --cron -d "${PUBLIC_IP}" 2>/dev/null || true
-    else
-        info "申请 Let's Encrypt IP 证书 ..."
-        info "（需要端口 80 对外可访问，acme.sh 将启动临时服务器验证）"
-        ${acme_sh} --issue \
-            --server letsencrypt \
-            -d "${PUBLIC_IP}" \
-            --certificate-profile shortlived \
-            --standalone \
-            --force || {
-                error "证书申请失败，常见原因："
-                error "1. 端口 80 被防火墙阻挡（安全组/iptables 需放行）"
-                error "2. 公网 IP ${PUBLIC_IP} 并非本机公网 IP"
-                error "3. 端口 80 被占用且未能自动释放"
-                error ""
-                error "请检查后重试，或手动运行："
-                error "  ~/.acme.sh/acme.sh --issue --server letsencrypt -d ${PUBLIC_IP} --certificate-profile shortlived --standalone"
-                exit 1
-            }
-        info "证书申请成功！"
-    fi
-
-    # 设置续期后重载 Caddy
-    ${acme_sh} --install-cert -d "${PUBLIC_IP}" \
-        --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
-}
-
 install_caddy() {
     if command -v caddy &>/dev/null; then
         info "Caddy 已安装: $(caddy version)"
@@ -232,7 +184,7 @@ install_caddy() {
         if ! id -u caddy &>/dev/null; then
             useradd -r -d /var/lib/caddy -s /sbin/nologin caddy 2>/dev/null || true
         fi
-        mkdir -p /var/lib/caddy /etc/caddy /var/log/caddy
+        mkdir -p /var/lib/caddy /etc/caddy /var/log/caddy /var/www/html
         chown -R caddy:caddy /var/lib/caddy /var/log/caddy 2>/dev/null || true
 
         if command -v systemctl &>/dev/null; then
@@ -243,6 +195,95 @@ install_caddy() {
     fi
 
     info "Caddy 安装完成: $(caddy version)"
+}
+
+# ---- 启动临时 Caddy（仅端口 80，用于首次证书申请） ----
+start_temp_caddy() {
+    # 如果证书已存在，不需要启动临时 Caddy
+    local cert_dir="${HOME}/.acme.sh/${PUBLIC_IP}_ecc"
+    if [[ -f "${cert_dir}/fullchain.cer" ]] && [[ -f "${cert_dir}/${PUBLIC_IP}.key" ]]; then
+        return
+    fi
+
+    # 检查端口 80 是否被占用
+    if command -v ss &>/dev/null; then
+        if ss -tlnp 2>/dev/null | grep -q ':80 '; then
+            # 可能已有 Caddy 在运行（重跑脚本），直接返回
+            if pgrep -x caddy &>/dev/null; then
+                info "Caddy 已在运行，跳过临时启动"
+                return
+            fi
+            error "端口 80 被占用，请释放后重试"
+            error "执行: lsof -ti:80 | xargs kill -9"
+            exit 1
+        fi
+    fi
+
+    info "启动临时 Caddy（端口 80，用于 Let's Encrypt 验证）..."
+    mkdir -p /var/www/html
+
+    cat > /etc/caddy/Caddyfile.temp <<'EOF'
+:80 {
+    root * /var/www/html
+    file_server
+}
+EOF
+
+    caddy start --config /etc/caddy/Caddyfile.temp --adapter caddyfile 2>/dev/null || {
+        caddy run --config /etc/caddy/Caddyfile.temp --adapter caddyfile > /dev/null 2>&1 &
+        TEMP_CADDY_PID=$!
+    }
+    sleep 2
+    info "临时 Caddy 已启动"
+}
+
+stop_temp_caddy() {
+    if [[ -n "${TEMP_CADDY_PID:-}" ]]; then
+        kill "$TEMP_CADDY_PID" 2>/dev/null || true
+        wait "$TEMP_CADDY_PID" 2>/dev/null || true
+    fi
+    # 也尝试用 caddy stop（处理 caddy start 启动的情况）
+    caddy stop --config /etc/caddy/Caddyfile.temp 2>/dev/null || true
+    rm -f /etc/caddy/Caddyfile.temp
+}
+
+# ---- 申请证书（webroot 模式） ----
+issue_cert() {
+    local acme_sh="${HOME}/.acme.sh/acme.sh"
+    local cert_dir="${HOME}/.acme.sh/${PUBLIC_IP}_ecc"
+    CERT_FILE="${cert_dir}/fullchain.cer"
+    KEY_FILE="${cert_dir}/${PUBLIC_IP}.key"
+
+    mkdir -p /var/www/html
+
+    if [[ -f "$CERT_FILE" ]] && [[ -f "$KEY_FILE" ]]; then
+        info "证书已存在，检查续期 ..."
+        ${acme_sh} --cron 2>/dev/null || true
+    else
+        info "申请 Let's Encrypt IP 证书（webroot 模式）..."
+        info "Caddy 已在端口 80 响应验证请求"
+        ${acme_sh} --issue \
+            --server letsencrypt \
+            -d "${PUBLIC_IP}" \
+            --certificate-profile shortlived \
+            --webroot /var/www/html \
+            --force || {
+                stop_temp_caddy
+                error "证书申请失败，常见原因："
+                error "1. 端口 80 被防火墙阻挡（安全组/iptables 需放行）"
+                error "2. 公网 IP ${PUBLIC_IP} 并非本机公网 IP"
+                error "3. /var/www/html 目录不可写"
+                error ""
+                error "请检查后重试，或手动运行："
+                error "  ~/.acme.sh/acme.sh --issue --server letsencrypt -d ${PUBLIC_IP} --certificate-profile shortlived --webroot /var/www/html"
+                exit 1
+            }
+        info "证书申请成功！"
+    fi
+
+    # 设置续期后重载 Caddy（webroot 模式）
+    ${acme_sh} --install-cert -d "${PUBLIC_IP}" \
+        --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
 }
 
 # ---- 生成根页面 HTML ----
@@ -283,7 +324,7 @@ a { color: #2e7d32; text-decoration: none; font-weight: 500; }
 ${list_items}
 </ul>
 <div class="footer">
-  证书自动续期 &middot; 路径路由反向代理
+  HTTP 自动跳转 HTTPS &middot; 证书自动续期 &middot; 路径路由反向代理
 </div>
 </body>
 </html>
@@ -297,7 +338,6 @@ configure_caddy() {
 
     mkdir -p /etc/caddy
 
-    # 写入 Caddyfile 头部
     cat > "$caddyfile" <<CADDYEOF
 # Caddy + IP SSL 多服务配置 - 由 setup.sh 自动生成
 # 公网 IP: ${PUBLIC_IP}
@@ -306,6 +346,23 @@ configure_caddy() {
     admin off
 }
 
+# -------- 端口 80: ACME 验证 + HTTP → HTTPS 跳转 --------
+:80 {
+    # 先处理 Let's Encrypt 验证请求
+    @acme {
+        path /.well-known/acme-challenge/*
+    }
+    handle @acme {
+        root * /var/www/html
+        file_server
+    }
+    # 其余请求跳转 HTTPS
+    handle {
+        redir https://${PUBLIC_IP}{uri} permanent
+    }
+}
+
+# -------- 端口 443: HTTPS + 反向代理 --------
 :443 {
     tls ${CERT_FILE} ${KEY_FILE}
 
@@ -315,7 +372,7 @@ CADDYEOF
     for svc in "${SERVICES_LIST[@]}"; do
         IFS='|' read -r path host port <<< "$svc"
         [[ -z "$host" ]] && host="127.0.0.1"
-        local strip_path="${path%/}"  # 去掉末尾斜杠，用于 redirect
+        local strip_path="${path%/}"
 
         cat >> "$caddyfile" <<ROUTE
 
@@ -330,7 +387,7 @@ CADDYEOF
 ROUTE
     done
 
-    # 写入根路径处理（服务列表页面）
+    # 根路径和日志
     cat >> "$caddyfile" <<ROUTE
 
     # 根路径 - 服务列表页
@@ -355,10 +412,10 @@ setup_cron_renew() {
     info "配置证书自动续期 ..."
     local acme_sh="${HOME}/.acme.sh/acme.sh"
 
-    # 每天凌晨 3 点检查续期
+    # 每天凌晨 3 点检查续期（acme.sh 自动使用 webroot 模式）
     if ! (crontab -l 2>/dev/null | grep -q 'acme.sh.*--cron'); then
         (crontab -l 2>/dev/null || true; echo "0 3 * * * ${acme_sh} --cron > /dev/null 2>&1") | crontab -
-        info "已添加续期 crontab"
+        info "已添加续期 crontab（每日 3:00 检查）"
     else
         info "续期 crontab 已存在"
     fi
@@ -374,7 +431,7 @@ start_caddy() {
             return 1
         }
     else
-        caddy stop --config /etc/caddy/Caddyfile 2>/dev/null || true
+        caddy stop 2>/dev/null || true
         sleep 1
         nohup caddy run --config /etc/caddy/Caddyfile --adapter caddyfile > /var/log/caddy/caddy.log 2>&1 &
         info "Caddy 已后台启动 (PID: $!)"
@@ -399,6 +456,7 @@ print_summary() {
     echo -e "${GREEN}========================================${NC}"
     echo ""
     echo -e "  入口地址:  ${GREEN}https://${PUBLIC_IP}${NC}"
+    echo -e "  HTTP 跳转:  http://${PUBLIC_IP}  →  https://${PUBLIC_IP}"
     echo ""
     echo -e "  ${YELLOW}可用服务:${NC}"
     for svc in "${SERVICES_LIST[@]}"; do
@@ -413,10 +471,12 @@ print_summary() {
     echo "  访问日志:     /var/log/caddy/access.log"
     echo ""
     echo -e "${YELLOW}  重要提示：${NC}"
-    echo "  1. 云服务商安全组需放行端口 443 (HTTPS) 和 80 (证书续期)"
-    echo "  2. 某些 Web 应用（如 SillyTavern）需在应用内开启反代模式:"
+    echo "  1. 云服务商安全组需放行端口 443 (HTTPS) 和 80 (HTTP)"
+    echo "  2. 访问 http://IP 会自动跳转到 https://IP"
+    echo "  3. 原始 http://IP:端口 仍然可以直接访问（旁路）"
+    echo "  4. 某些 Web 应用（如 SillyTavern）需在应用内开启反代模式:"
     echo "     SillyTavern: config.yaml 中设置 enableProxy: true"
-    echo "  3. 修改服务列表后，编辑 /etc/caddy/Caddyfile 然后执行:"
+    echo "  5. 修改服务列表后，编辑 /etc/caddy/Caddyfile 然后执行:"
     echo "     systemctl reload caddy"
     echo ""
     echo -e "${GREEN}  一键测试: curl -k https://${PUBLIC_IP}/couchdb/${NC}"
@@ -439,8 +499,14 @@ main() {
     install_deps
     detect_ip
     install_acme
-    issue_cert
     install_caddy
+
+    # 首次运行：启动临时 Caddy（端口 80）用于证书申请
+    # 后续运行：证书已存在，直接检查续期
+    start_temp_caddy
+    issue_cert
+    stop_temp_caddy
+
     gen_root_html
     configure_caddy
     setup_cron_renew
