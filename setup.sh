@@ -588,7 +588,7 @@ CADDYEOF
     # -------- 端口 443: IP 证书反向代理（acme.sh）--------
     cat >> "$caddyfile" <<ROUTE
 # 公网 IP 入口 — 使用 acme.sh 签发的 IP 证书
-:443 {
+${PUBLIC_IP}:443 {
     tls ${CERT_FILE} ${KEY_FILE}${routes}
 }
 
