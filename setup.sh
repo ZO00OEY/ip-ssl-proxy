@@ -124,6 +124,23 @@ detect_ip() {
     info "公网 IP: ${PUBLIC_IP}"
 }
 
+prompt_ip() {
+    echo ""
+    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}│  检测到公网 IP: ${PUBLIC_IP}${NC}"
+    echo -e "${YELLOW}│  如服务器使用 VPN，检测的可能不是服务器真实 IP    ${NC}"
+    echo -e "${YELLOW}│  回车确认使用，或输入正确的公网 IP                ${NC}"
+    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+    echo -n "  IP [${PUBLIC_IP}]: "
+    read -r INPUT_IP </dev/tty 2>/dev/null || true
+    if [[ -n "$INPUT_IP" ]]; then
+        PUBLIC_IP="$INPUT_IP"
+        info "已手动设置公网 IP: ${PUBLIC_IP}"
+    else
+        info "使用检测到的公网 IP: ${PUBLIC_IP}"
+    fi
+}
+
 detect_os() {
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
@@ -249,9 +266,15 @@ start_temp_caddy() {
 
     if command -v ss &>/dev/null; then
         if ss -tlnp 2>/dev/null | grep -q ':80 '; then
-            error "端口 80 被占用，无法启动临时 Caddy"
-            error "执行: lsof -ti:80 | xargs kill -9"
-            exit 1
+            warn "端口 80 被占用，尝试强制释放..."
+            systemctl stop caddy 2>/dev/null || true
+            caddy stop 2>/dev/null || true
+            sleep 2
+            if ss -tlnp 2>/dev/null | grep -q ':80 '; then
+                error "端口 80 仍被占用，无法启动临时 Caddy"
+                error "请手动执行: systemctl stop caddy && fuser -k 80/tcp"
+                exit 1
+            fi
         fi
     fi
 
@@ -680,6 +703,7 @@ main() {
     detect_os
     install_deps
     detect_ip
+    prompt_ip
     prompt_domain
     install_acme
     install_caddy
