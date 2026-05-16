@@ -329,54 +329,6 @@ issue_ip_cert() {
         --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
 }
 
-# ---- 申请域名证书 ----
-issue_domain_cert() {
-    local acme_sh="${HOME}/.acme.sh/acme.sh"
-    local cert_dir="${HOME}/.acme.sh/${DOMAIN}_ecc"
-    CERT_FILE="${cert_dir}/fullchain.cer"
-    KEY_FILE="${cert_dir}/${DOMAIN}.key"
-
-    echo ""
-    echo -e "${YELLOW}-----------------------------------------${NC}"
-    echo -e "${YELLOW}  域名证书（acme.sh）${NC}"
-    echo -e "${YELLOW}-----------------------------------------${NC}"
-
-    mkdir -p /var/www/html
-
-    if [[ -f "$CERT_FILE" ]] && [[ -f "$KEY_FILE" ]]; then
-        info "域名证书已存在，检查有效期..."
-        local expiry
-        expiry=$(openssl x509 -in "$CERT_FILE" -noout -enddate 2>/dev/null | cut -d= -f2)
-        local now_epoch; now_epoch=$(date +%s)
-        local expiry_epoch; expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
-        if [[ -n "$expiry" ]] && [[ "$expiry_epoch" -gt "$now_epoch" ]]; then
-            local days_left=$(( (expiry_epoch - now_epoch) / 86400 ))
-            echo -e "  ${DOMAIN}  ...  ${GREEN}有效${NC}（${days_left} 天后到期）"
-        else
-            echo -e "  ${DOMAIN}  ...  ${RED}已过期${NC}，重新申请..."
-            ${acme_sh} --issue --server letsencrypt -d "${DOMAIN}" \
-                --webroot /var/www/html --force 2>/dev/null || {
-                error "域名证书续期失败"
-                exit 1
-            }
-        fi
-    else
-        info "申请域名证书: ${DOMAIN}"
-        ${acme_sh} --issue --server letsencrypt -d "${DOMAIN}" \
-            --webroot /var/www/html --force 2>/dev/null || {
-            stop_temp_caddy
-            error "域名证书申请失败，常见原因："
-            error "1. 域名 ${DOMAIN} 的 DNS 未指向本机 IP"
-            error "2. 端口 80 被防火墙阻挡"
-            exit 1
-        }
-        info "域名证书申请成功！"
-    fi
-
-    ${acme_sh} --install-cert -d "${DOMAIN}" \
-        --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
-}
-
 # ---- 生成根页面 HTML ----
 gen_root_html() {
     local base_url="${1:-}"
@@ -561,9 +513,8 @@ configure_caddy_domain() {
     }
 }
 
-# -------- 域名 SSL 反代 --------
+# -------- 域名反代（Caddy 自动签发证书）-------
 ${DOMAIN} {
-    tls ${CERT_FILE} ${KEY_FILE}
 CADDYEOF
 
     for svc in "${SERVICES_LIST[@]}"; do
@@ -602,21 +553,9 @@ ROUTE
 setup_cron_renew_ip() {
     info "配置 IP 证书自动续期 ..."
     local acme_sh="${HOME}/.acme.sh/acme.sh"
-    if ! (crontab -l 2>/dev/null | grep -q 'acme.sh.*--cron.*159.75.239.97'); then
+    if ! (crontab -l 2>/dev/null | grep -q "acme.sh.*--cron.*${PUBLIC_IP}"); then
         (crontab -l 2>/dev/null || true; echo "0 3 * * * ${acme_sh} --cron -d ${PUBLIC_IP} > /dev/null 2>&1") | crontab -
         info "已添加续期 crontab（每日 3:00 检查 IP 证书）"
-    else
-        info "续期 crontab 已存在"
-    fi
-}
-
-# ---- 证书续期 cron（仅域名）----
-setup_cron_renew_domain() {
-    info "配置域名证书自动续期 ..."
-    local acme_sh="${HOME}/.acme.sh/acme.sh"
-    if ! (crontab -l 2>/dev/null | grep -q 'acme.sh.*--cron.*${DOMAIN}'); then
-        (crontab -l 2>/dev/null || true; echo "0 3 * * * ${acme_sh} --cron -d ${DOMAIN} > /dev/null 2>&1") | crontab -
-        info "已添加续期 crontab（每日 3:00 检查域名证书）"
     else
         info "续期 crontab 已存在"
     fi
@@ -704,7 +643,7 @@ print_summary_domain() {
     done
     echo ""
     echo "  Caddy 配置:   /etc/caddy/Caddyfile"
-    echo "  SSL 证书:     ${CERT_FILE}"
+    echo "  SSL 证书:     Caddy 自动管理（Let's Encrypt）"
     echo "  访问日志:     /var/log/caddy/access.log"
     echo "  导航页面:     /var/www/html/index.html"
     echo ""
@@ -722,69 +661,36 @@ print_summary_domain() {
 
 # ---- 列出已有子域名 ----
 list_subdomains() {
-    local acme_home="${HOME}/.acme.sh"
+    local caddyfile="/etc/caddy/Caddyfile"
     local found=()
 
-    for dir in "$acme_home"/*"${DOMAIN}"_ecc; do
-        [[ -d "$dir" ]] || continue
-        local name
-        name=$(basename "$dir")
-        name="${name%_ecc}"
-        [[ "$name" == "$DOMAIN" ]] && continue
-        found+=("$name")
-    done
+    if [[ -f "$caddyfile" ]]; then
+        while IFS= read -r line; do
+            if [[ "$line" == *".${DOMAIN}"* ]] && [[ ! "$line" == "${DOMAIN}"* ]]; then
+                local sub
+                sub=$(echo "$line" | awk '{print $1}')
+                [[ -z "$sub" ]] && continue
+                local port
+                port=$(grep -A5 "^${sub} " "$caddyfile" 2>/dev/null | grep "reverse_proxy" | grep -oP ':\K\d+' | head -1 || echo "?")
+                found+=("$sub (端口 ${port})")
+            fi
+        done < "$caddyfile"
+    fi
 
     if [[ ${#found[@]} -eq 0 ]]; then
-        echo "  （暂无子域名证书）"
-        return 0
-    fi
-
-    for name in "${found[@]}"; do
-        local port="?"
-        if [[ -f /etc/caddy/Caddyfile ]]; then
-            port=$(grep -A5 "^${name} " /etc/caddy/Caddyfile 2>/dev/null | grep "reverse_proxy" | grep -oP ':\K\d+' | head -1 || echo "?")
-        fi
-        echo "  ${name}  →  端口 ${port}"
-    done
-}
-
-# ---- 申请子域名证书 ----
-issue_subdomain_cert() {
-    local sub_domain="${1}"
-    local acme_sh="${HOME}/.acme.sh/acme.sh"
-
-    echo ""
-    echo -e "${YELLOW}-----------------------------------------${NC}"
-    echo -e "${YELLOW}  子域名证书: ${sub_domain}${NC}"
-    echo -e "${YELLOW}-----------------------------------------${NC}"
-
-    local cert_dir="${HOME}/.acme.sh/${sub_domain}_ecc"
-    local cert_file="${cert_dir}/fullchain.cer"
-    local key_file="${cert_dir}/${sub_domain}.key"
-
-    if [[ -f "$cert_file" ]] && [[ -f "$key_file" ]]; then
-        info "证书已存在: ${sub_domain}"
-        echo -e "  ${sub_domain}  ...  ${GREEN}已存在${NC}"
+        echo "  （暂无子域名）"
     else
-        info "申请子域名证书: ${sub_domain}"
-        ${acme_sh} --issue --server letsencrypt -d "${sub_domain}" \
-            --webroot /var/www/html --force 2>/dev/null || {
-            error "子域名证书申请失败: ${sub_domain}"
-            error "请确保 ${sub_domain} 的 DNS A 记录已指向本机"
-            return 1
-        }
-        info "子域名证书申请成功: ${sub_domain}"
+        for entry in "${found[@]}"; do
+            echo "  ${entry}"
+        done
     fi
-
-    ${acme_sh} --install-cert -d "${sub_domain}" \
-        --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
 }
+
 
 # ---- 添加子域名到 Caddyfile ----
 add_subdomain_to_caddy() {
     local sub_domain="${1}"
     local port="${2}"
-    local acme_home="${HOME}/.acme.sh"
     local caddyfile="/etc/caddy/Caddyfile"
 
     # 检查是否已存在
@@ -798,7 +704,6 @@ add_subdomain_to_caddy() {
 
 # subdomain: ${sub_domain%%.${DOMAIN}} → :${port}
 ${sub_domain} {
-    tls ${acme_home}/${sub_domain}_ecc/fullchain.cer ${acme_home}/${sub_domain}_ecc/${sub_domain}.key
     reverse_proxy 127.0.0.1:${port} {
         header_up X-Forwarded-Proto https
         header_up X-Forwarded-For {remote_host}
@@ -847,16 +752,10 @@ mode_domain() {
     detect_os
     install_deps
     prompt_domain
-    install_acme
     install_caddy
-
-    start_temp_caddy
-    issue_domain_cert
-    stop_temp_caddy
 
     gen_root_html "https://${DOMAIN}"
     configure_caddy_domain
-    setup_cron_renew_domain
     start_caddy "https://${DOMAIN}"
     print_summary_domain
 }
@@ -872,14 +771,9 @@ mode_subdomain() {
         prompt_domain
     fi
 
-    # 检查 acme.sh
-    if [[ ! -f "${HOME}/.acme.sh/acme.sh" ]]; then
-        install_acme
-    fi
-
     echo ""
     echo -e "${YELLOW}-----------------------------------------${NC}"
-    echo -e "${YELLOW}  现有子域名证书${NC}"
+    echo -e "${YELLOW}  现有子域名${NC}"
     echo -e "${YELLOW}-----------------------------------------${NC}"
     list_subdomains
 
@@ -907,12 +801,7 @@ mode_subdomain() {
 
     local sub_domain="${SUB_PREFIX}.${DOMAIN}"
     echo ""
-    info "即将添加: ${sub_domain} → :${SUB_PORT}"
-
-    # 确保临时 Caddy 在运行（子域名申请也需要验证）
-    start_temp_caddy
-    issue_subdomain_cert "$sub_domain"
-    stop_temp_caddy
+    info "即将添加: ${sub_domain} → :${SUB_PORT}（Caddy 将自动签发证书）"
 
     if [[ -f /etc/caddy/Caddyfile ]]; then
         add_subdomain_to_caddy "$sub_domain" "$SUB_PORT"
