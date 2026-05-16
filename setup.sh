@@ -548,7 +548,7 @@ ROUTE
     }
 }
 
-CADDYEOF
+ROUTE
 
     # ---- 子域名区块（如果设置了 DOMAIN） ----
     if [[ -n "$DOMAIN" ]]; then
