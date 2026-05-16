@@ -675,12 +675,21 @@ ROUTE
 }
 ROUTE
         done
+        # 主域名 → 导航页
+        cat >> "$caddyfile" <<ROUTE
+
+# ${DOMAIN} → 导航页
+${DOMAIN} {
+    root * /var/www/html
+    file_server
+}
+ROUTE
         local sub_count=0
         for svc in "${SERVICES_LIST[@]}"; do
             IFS='|' read -r _ _ _ s <<< "$svc"
             [[ -n "$s" ]] && sub_count=$((sub_count + 1))
         done
-        info "已添加子域名路由（共 ${sub_count} 个）"
+        info "已添加子域名路由（共 ${sub_count} 个），主域名 ${DOMAIN} → 导航页"
     fi
 
     info "Caddy 配置已生成，共 ${#SERVICES_LIST[@]} 个服务路由"
@@ -735,6 +744,9 @@ print_summary() {
     echo ""
     echo -e "  入口地址:  ${GREEN}https://${PUBLIC_IP}${NC}"
     echo -e "  HTTP 跳转:  http://${PUBLIC_IP}  →  https://${PUBLIC_IP}"
+    if [[ -n "$DOMAIN" ]]; then
+        echo -e "  主站:       ${GREEN}https://${DOMAIN}${NC}  →  导航页"
+    fi
     echo ""
     local sub_list=()
     local path_list=()
