@@ -73,9 +73,9 @@ check_root() {
 prompt_domain() {
     if [[ -z "${DOMAIN:-}" ]]; then
         echo ""
-        echo "-----------------------------------------"
-        echo "  输入你的域名 (例如: example.com)"
-        echo "-----------------------------------------"
+        echo -e "${YELLOW}-----------------------------------------${NC}"
+        echo -e "${YELLOW}  输入你的域名 (例如: example.com)${NC}"
+        echo -e "${YELLOW}-----------------------------------------${NC}"
         echo -n "  域名: "
         read -r DOMAIN </dev/tty 2>/dev/null || true
         DOMAIN="$(printf '%s' "$DOMAIN" | LC_ALL=C tr -cd 'a-zA-Z0-9.-')"
@@ -103,11 +103,11 @@ detect_ip() {
 
 prompt_ip() {
     echo ""
-    echo "-----------------------------------------"
-    echo "  检测到公网 IP: ${PUBLIC_IP}"
-    echo "  如服务器使用 VPN，检测的可能不是服务器真实 IP"
-    echo "  回车确认使用，或输入正确的公网 IP"
-    echo "-----------------------------------------"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
+    echo -e "${YELLOW}  检测到公网 IP: ${PUBLIC_IP}${NC}"
+    echo -e "${YELLOW}  如服务器使用 VPN，检测的可能不是服务器真实 IP${NC}"
+    echo -e "${YELLOW}  回车确认使用，或输入正确的公网 IP${NC}"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
     echo -n "  IP [${PUBLIC_IP}]: "
     read -r INPUT_IP </dev/tty 2>/dev/null || true
     if [[ -n "$INPUT_IP" ]]; then
@@ -298,9 +298,9 @@ issue_ip_cert() {
     KEY_FILE="${cert_dir}/${PUBLIC_IP}.key"
 
     echo ""
-    echo "-----------------------------------------"
-    echo "  IP 证书（acme.sh）"
-    echo "-----------------------------------------"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
+    echo -e "${YELLOW}  IP 证书（acme.sh）${NC}"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
 
     mkdir -p /var/www/html
 
@@ -337,9 +337,9 @@ issue_domain_cert() {
     KEY_FILE="${cert_dir}/${DOMAIN}.key"
 
     echo ""
-    echo "-----------------------------------------"
-    echo "  域名证书（acme.sh）"
-    echo "-----------------------------------------"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
+    echo -e "${YELLOW}  域名证书（acme.sh）${NC}"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
 
     mkdir -p /var/www/html
 
@@ -754,9 +754,9 @@ issue_subdomain_cert() {
     local acme_sh="${HOME}/.acme.sh/acme.sh"
 
     echo ""
-    echo "-----------------------------------------"
-    echo "  子域名证书: ${sub_domain}"
-    echo "-----------------------------------------"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
+    echo -e "${YELLOW}  子域名证书: ${sub_domain}${NC}"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
 
     local cert_dir="${HOME}/.acme.sh/${sub_domain}_ecc"
     local cert_file="${cert_dir}/fullchain.cer"
@@ -878,15 +878,15 @@ mode_subdomain() {
     fi
 
     echo ""
-    echo "-----------------------------------------"
-    echo "  现有子域名证书"
-    echo "-----------------------------------------"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
+    echo -e "${YELLOW}  现有子域名证书${NC}"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
     list_subdomains
 
     echo ""
-    echo "-----------------------------------------"
-    echo "  添加新子域名"
-    echo "-----------------------------------------"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
+    echo -e "${YELLOW}  添加新子域名${NC}"
+    echo -e "${YELLOW}-----------------------------------------${NC}"
     echo -n "  子域名前缀（如: st → ${DOMAIN} 的 st.${DOMAIN}）: "
     read -r SUB_PREFIX </dev/tty 2>/dev/null || true
     SUB_PREFIX="$(printf '%s' "$SUB_PREFIX" | LC_ALL=C tr -cd 'a-zA-Z0-9-')"
