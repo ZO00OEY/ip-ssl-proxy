@@ -596,67 +596,70 @@ add_custom_routes() {
     echo -e "${YELLOW}  当前模式: IP — 添加/删除子路径${NC}"
     echo -e "${YELLOW}-----------------------------------------${NC}"
 
-    # 列出全部可用服务（预配置 + 自定义）
-    echo ""
-    echo "  可用服务:"
-    local -a all_services=()
-    if [[ -f /etc/caddy/.services.conf ]]; then
-        mapfile -t all_services < /etc/caddy/.services.conf
-    else
-        all_services=("${DEFAULT_SERVICES[@]}")
-    fi
-    for svc in "${all_services[@]}"; do
-        IFS='|' read -r p h port _ <<< "$svc"
-        [[ -z "$h" ]] && h="127.0.0.1"
-        local name="${p//\//}"
-        [[ -z "$name" ]] && continue
-        echo "    ${p} → ${h}:${port}"
-    done
-    for f in "$custom_dir"/*.conf; do
-        [[ -f "$f" ]] || continue
-        local n; n=$(basename "$f" .conf)
-        local p; p=$(grep -oP ':\K\d+' "$f" 2>/dev/null | head -1 || echo "?")
-        [[ -n "$p" ]] && echo "    /${n}/ → 127.0.0.1:${p} [自定义]"
-    done
-
     local changed=false
     while true; do
         echo ""
-        echo -n "  服务名称（如: myapp，!名称 删除，留空结束）: "
-        read -r SVC_NAME </dev/tty 2>/dev/null || true
-        [[ -z "$SVC_NAME" ]] && break
+        echo "  可用服务:"
 
-        # 删除操作
-        if [[ "$SVC_NAME" == !* ]]; then
-            local del_name="${SVC_NAME#!}"
-            del_name="$(printf '%s' "$del_name" | LC_ALL=C tr -cd 'a-zA-Z0-9_-')"
-            if [[ -z "$del_name" ]]; then
-                error "请指定要删除的服务名称，如 !myapp"
+        # 构建编号列表
+        local -a list_items=()
+        local -a delete_names=()
+        local -a base_services=()
+        if [[ -f /etc/caddy/.services.conf ]]; then
+            mapfile -t base_services < /etc/caddy/.services.conf
+        else
+            base_services=("${DEFAULT_SERVICES[@]}")
+        fi
+
+        # 预配置服务（不可删除）
+        for svc in "${base_services[@]}"; do
+            IFS='|' read -r p h port _ <<< "$svc"
+            [[ -z "$h" ]] && h="127.0.0.1"
+            local _name="${p//\//}"
+            [[ -z "$_name" ]] && continue
+            list_items+=("${p} → ${h}:${port}")
+            delete_names+=("")
+        done
+
+        # 自定义服务（可删除）
+        for f in "$custom_dir"/*.conf; do
+            [[ -f "$f" ]] || continue
+            local n; n=$(basename "$f" .conf)
+            local p; p=$(grep -oP ':\K\d+' "$f" 2>/dev/null | head -1 || echo "?")
+            [[ -n "$p" ]] || continue
+            list_items+=("/${n}/ → 127.0.0.1:${p} [自定义]")
+            delete_names+=("$n")
+        done
+
+        # 打印编号列表
+        for i in "${!list_items[@]}"; do
+            printf "  %2d. %s\n" $((i+1)) "${list_items[$i]}"
+        done
+
+        echo ""
+        echo -n "  输入序号删除服务，回车添加新服务，0 返回菜单: "
+        read -r input </dev/tty 2>/dev/null || true
+
+        # 回车 → 添加流程
+        if [[ -z "$input" ]]; then
+            echo -n "  服务名称（如: myapp）: "
+            read -r SVC_NAME </dev/tty 2>/dev/null || true
+            [[ -z "$SVC_NAME" ]] && continue
+            SVC_NAME="$(printf '%s' "$SVC_NAME" | LC_ALL=C tr -cd 'a-zA-Z0-9_-')"
+            [[ -z "$SVC_NAME" ]] && { error "服务名称不能为空"; continue; }
+
+            echo -n "  后端端口（如: 3000）: "
+            read -r SVC_PORT </dev/tty 2>/dev/null || true
+            SVC_PORT="$(printf '%s' "$SVC_PORT" | LC_ALL=C tr -cd '0-9')"
+            [[ -z "$SVC_PORT" ]] && { error "端口不能为空"; continue; }
+
+            # 查重
+            if [[ -f "${custom_dir}/${SVC_NAME}.conf" ]]; then
+                warn "服务 /${SVC_NAME}/ 已存在，跳过"
                 continue
             fi
-            if [[ -f "${custom_dir}/${del_name}.conf" ]]; then
-                rm "${custom_dir}/${del_name}.conf"
-                info "已删除: /${del_name}/"
-                changed=true
-            else
-                error "服务 /${del_name}/ 不存在"
-            fi
-            continue
-        fi
 
-        # 添加操作
-        SVC_NAME="$(printf '%s' "$SVC_NAME" | LC_ALL=C tr -cd 'a-zA-Z0-9_-')"
-        [[ -z "$SVC_NAME" ]] && { error "服务名称不能为空"; continue; }
-
-        echo -n "  后端端口（如: 3000）: "
-        read -r SVC_PORT </dev/tty 2>/dev/null || true
-        SVC_PORT="$(printf '%s' "$SVC_PORT" | LC_ALL=C tr -cd '0-9')"
-        if [[ -z "$SVC_PORT" ]]; then
-            error "端口不能为空"
-            continue
-        fi
-
-        cat > "${custom_dir}/${SVC_NAME}.conf" <<ROUTE
+            cat > "${custom_dir}/${SVC_NAME}.conf" <<ROUTE
     handle_path /${SVC_NAME}/* {
         reverse_proxy 127.0.0.1:${SVC_PORT} {
             header_up X-Forwarded-Proto https
@@ -664,8 +667,33 @@ add_custom_routes() {
         }
     }
 ROUTE
-        info "已添加: https://${PUBLIC_IP}/${SVC_NAME}/ → :${SVC_PORT}"
-        changed=true
+            info "已添加: https://${PUBLIC_IP}/${SVC_NAME}/ → :${SVC_PORT}"
+            changed=true
+            continue
+        fi
+
+        # 0 → 返回
+        [[ "$input" == "0" ]] && break
+
+        # 数字 → 删除
+        if [[ "$input" =~ ^[0-9]+$ ]]; then
+            local idx=$((10#$input - 1))
+            if [[ $idx -lt 0 || $idx -ge ${#delete_names[@]} ]]; then
+                error "无效序号"
+                continue
+            fi
+            if [[ -z "${delete_names[$idx]}" ]]; then
+                error "默认服务不能删除"
+                continue
+            fi
+            local del_name="${delete_names[$idx]}"
+            rm "${custom_dir}/${del_name}.conf"
+            info "已删除: /${del_name}/"
+            changed=true
+            continue
+        fi
+
+        error "输入无效，请输入序号、回车或 0"
     done
 
     [[ "$changed" == "false" ]] && { warn "未做任何更改"; return 0; }
@@ -729,77 +757,74 @@ add_custom_subdomains() {
     echo -e "${YELLOW}  当前模式: 域名 — 添加/删除子域名${NC}"
     echo -e "${YELLOW}-----------------------------------------${NC}"
 
-    # 列出全部可用服务（路径 + 子域名）
-    echo ""
-    echo "  可用服务:"
-    local -a all_services=()
-    if [[ -f /etc/caddy/.services.conf ]]; then
-        mapfile -t all_services < /etc/caddy/.services.conf
-    else
-        for svc in "${DEFAULT_SERVICES[@]}"; do
-            all_services+=("$svc")
-        done
-    fi
-    for svc in "${all_services[@]}"; do
-        IFS='|' read -r p h port _ <<< "$svc"
-        [[ -z "$h" ]] && h="127.0.0.1"
-        local name="${p//\//}"
-        [[ -z "$name" ]] && continue
-        echo "    https://${DOMAIN}${p} → ${h}:${port}"
-    done
-    for f in "$sub_dir"/*.conf; do
-        [[ -f "$f" ]] || continue
-        local n; n=$(basename "$f" .conf)
-        local p; p=$(grep -oP ':\K\d+' "$f" 2>/dev/null | head -1 || echo "?")
-        [[ -n "$p" ]] && echo "    ${n}.${DOMAIN} → :${p} [自定义]"
-    done
-
     local changed=false
     while true; do
         echo ""
-        echo -n "  子域名前缀（如: st，!前缀 删除，留空结束）: "
-        read -r SUB_PREFIX </dev/tty 2>/dev/null || true
-        [[ -z "$SUB_PREFIX" ]] && break
+        echo "  可用服务:"
 
-        # 删除操作
-        if [[ "$SUB_PREFIX" == !* ]]; then
-            local del_name="${SUB_PREFIX#!}"
-            del_name="$(printf '%s' "$del_name" | LC_ALL=C tr -cd 'a-zA-Z0-9-')"
-            if [[ -z "$del_name" ]]; then
-                error "请指定要删除的子域名前缀，如 !st"
+        # 构建编号列表
+        local -a list_items=()
+        local -a delete_names=()
+        local -a base_services=()
+        if [[ -f /etc/caddy/.services.conf ]]; then
+            mapfile -t base_services < /etc/caddy/.services.conf
+        else
+            for svc in "${DEFAULT_SERVICES[@]}"; do
+                base_services+=("$svc")
+            done
+        fi
+
+        # 预配置服务（不可删除）
+        for svc in "${base_services[@]}"; do
+            IFS='|' read -r p h port _ <<< "$svc"
+            [[ -z "$h" ]] && h="127.0.0.1"
+            local _name="${p//\//}"
+            [[ -z "$_name" ]] && continue
+            list_items+=("https://${DOMAIN}${p} → ${h}:${port}")
+            delete_names+=("")
+        done
+
+        # 自定义子域名（可删除）
+        for f in "$sub_dir"/*.conf; do
+            [[ -f "$f" ]] || continue
+            local n; n=$(basename "$f" .conf)
+            local p; p=$(grep -oP ':\K\d+' "$f" 2>/dev/null | head -1 || echo "?")
+            [[ -n "$p" ]] || continue
+            list_items+=("${n}.${DOMAIN} → :${p} [自定义]")
+            delete_names+=("$n")
+        done
+
+        # 打印编号列表
+        for i in "${!list_items[@]}"; do
+            printf "  %2d. %s\n" $((i+1)) "${list_items[$i]}"
+        done
+
+        echo ""
+        echo -n "  输入序号删除服务，回车添加新服务，0 返回菜单: "
+        read -r input </dev/tty 2>/dev/null || true
+
+        # 回车 → 添加流程
+        if [[ -z "$input" ]]; then
+            echo -n "  子域名前缀（如: st）: "
+            read -r SUB_PREFIX </dev/tty 2>/dev/null || true
+            [[ -z "$SUB_PREFIX" ]] && continue
+            SUB_PREFIX="$(printf '%s' "$SUB_PREFIX" | LC_ALL=C tr -cd 'a-zA-Z0-9-')"
+            [[ -z "$SUB_PREFIX" ]] && { error "子域名前缀不能为空"; continue; }
+
+            echo -n "  后端端口（如: 8000）: "
+            read -r SUB_PORT </dev/tty 2>/dev/null || true
+            SUB_PORT="$(printf '%s' "$SUB_PORT" | LC_ALL=C tr -cd '0-9')"
+            [[ -z "$SUB_PORT" ]] && { error "端口不能为空"; continue; }
+
+            local sub_domain="${SUB_PREFIX}.${DOMAIN}"
+
+            # 查重
+            if [[ -f "${sub_dir}/${SUB_PREFIX}.conf" ]]; then
+                warn "子域名 ${sub_domain} 已存在，跳过"
                 continue
             fi
-            if [[ -f "${sub_dir}/${del_name}.conf" ]]; then
-                rm "${sub_dir}/${del_name}.conf"
-                info "已删除: ${del_name}.${DOMAIN}"
-                changed=true
-            else
-                error "子域名 ${del_name}.${DOMAIN} 不存在"
-            fi
-            continue
-        fi
 
-        # 添加操作
-        SUB_PREFIX="$(printf '%s' "$SUB_PREFIX" | LC_ALL=C tr -cd 'a-zA-Z0-9-')"
-        [[ -z "$SUB_PREFIX" ]] && { error "子域名前缀不能为空"; continue; }
-
-        echo -n "  后端端口（如: 8000）: "
-        read -r SUB_PORT </dev/tty 2>/dev/null || true
-        SUB_PORT="$(printf '%s' "$SUB_PORT" | LC_ALL=C tr -cd '0-9')"
-        if [[ -z "$SUB_PORT" ]]; then
-            error "端口不能为空"
-            continue
-        fi
-
-        local sub_domain="${SUB_PREFIX}.${DOMAIN}"
-
-        # 检查重复
-        if [[ -f "${sub_dir}/${SUB_PREFIX}.conf" ]]; then
-            warn "子域名 ${sub_domain} 已存在，跳过"
-            continue
-        fi
-
-        cat > "${sub_dir}/${SUB_PREFIX}.conf" <<ROUTE
+            cat > "${sub_dir}/${SUB_PREFIX}.conf" <<ROUTE
 ${sub_domain} {
     reverse_proxy 127.0.0.1:${SUB_PORT} {
         header_up X-Forwarded-Proto https
@@ -813,8 +838,33 @@ ${sub_domain} {
     }
 }
 ROUTE
-        info "已添加: https://${sub_domain}/ → :${SUB_PORT}"
-        changed=true
+            info "已添加: https://${sub_domain}/ → :${SUB_PORT}"
+            changed=true
+            continue
+        fi
+
+        # 0 → 返回
+        [[ "$input" == "0" ]] && break
+
+        # 数字 → 删除
+        if [[ "$input" =~ ^[0-9]+$ ]]; then
+            local idx=$((10#$input - 1))
+            if [[ $idx -lt 0 || $idx -ge ${#delete_names[@]} ]]; then
+                error "无效序号"
+                continue
+            fi
+            if [[ -z "${delete_names[$idx]}" ]]; then
+                error "默认服务不能删除"
+                continue
+            fi
+            local del_name="${delete_names[$idx]}"
+            rm "${sub_dir}/${del_name}.conf"
+            info "已删除: ${del_name}.${DOMAIN}"
+            changed=true
+            continue
+        fi
+
+        error "输入无效，请输入序号、回车或 0"
     done
 
     [[ "$changed" == "false" ]] && { warn "未做任何更改"; return 0; }
