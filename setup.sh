@@ -668,7 +668,8 @@ add_custom_routes() {
     }
 ROUTE
             info "已添加: https://${PUBLIC_IP}/${SVC_NAME}/ → :${SVC_PORT}"
-            changed=true
+            rebuild_nav_ip
+            reload_caddy
             continue
         fi
 
@@ -689,17 +690,15 @@ ROUTE
             local del_name="${delete_names[$idx]}"
             rm "${custom_dir}/${del_name}.conf"
             info "已删除: /${del_name}/"
-            changed=true
+            rebuild_nav_ip
+            reload_caddy
             continue
         fi
 
         error "输入无效，请输入序号、回车或 0"
     done
 
-    [[ "$changed" == "false" ]] && { warn "未做任何更改"; return 0; }
-
-    rebuild_nav_ip
-    reload_caddy
+    [[ "$changed" == "true" ]] && { rebuild_nav_ip; reload_caddy; }
 }
 
 rebuild_nav_ip() {
@@ -839,7 +838,8 @@ ${sub_domain} {
 }
 ROUTE
             info "已添加: https://${sub_domain}/ → :${SUB_PORT}"
-            changed=true
+            rebuild_nav_domain "$domain"
+            reload_caddy
             continue
         fi
 
@@ -860,17 +860,16 @@ ROUTE
             local del_name="${delete_names[$idx]}"
             rm "${sub_dir}/${del_name}.conf"
             info "已删除: ${del_name}.${DOMAIN}"
-            changed=true
+            rebuild_nav_domain "$domain"
+            reload_caddy
             continue
         fi
 
         error "输入无效，请输入序号、回车或 0"
     done
 
-    [[ "$changed" == "false" ]] && { warn "未做任何更改"; return 0; }
+    [[ "$changed" == "true" ]] && { rebuild_nav_domain "$domain"; reload_caddy; }
 
-    rebuild_nav_domain "$domain"
-    reload_caddy
 }
 
 rebuild_nav_domain() {
