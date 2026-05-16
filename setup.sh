@@ -351,55 +351,6 @@ issue_cert() {
     ${acme_sh} --install-cert -d "${PUBLIC_IP}" \
         --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
 }
-
-# ---- 域名证书管理：不存在则申请，存在则检查有效期 ----
-manage_domain_cert() {
-    [[ -z "$DOMAIN" ]] && return
-    local acme_sh="${HOME}/.acme.sh/acme.sh"
-
-    echo ""
-    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  域名证书（acme.sh webroot 模式）                    │${NC}"
-    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
-
-    local cert_dir="${HOME}/.acme.sh/${DOMAIN}_ecc"
-    local cert_file="${cert_dir}/fullchain.cer"
-    local key_file="${cert_dir}/${DOMAIN}.key"
-
-    if [[ -f "$cert_file" ]] && [[ -f "$key_file" ]]; then
-        local expiry
-        expiry=$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | cut -d= -f2)
-        local now_epoch
-        now_epoch=$(date +%s)
-        local expiry_epoch
-        expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
-        if [[ -n "$expiry" ]] && [[ "$expiry_epoch" -gt "$now_epoch" ]]; then
-            local days_left=$(( (expiry_epoch - now_epoch) / 86400 ))
-            echo -e "  ${DOMAIN}  ...  ${GREEN}有效${NC}（${days_left} 天后到期）"
-            echo ""
-            info "域名证书有效，Caddy 自动 SSL 将接管续期"
-        else
-            echo -e "  ${DOMAIN}  ...  ${RED}已过期${NC}"
-            echo ""
-            info "域名证书已过期，尝试重新申请..."
-            ${acme_sh} --issue --server letsencrypt -d "${DOMAIN}" \
-                --webroot /var/www/html --force 2>/dev/null || {
-                warn "重新申请失败，Caddy 自动 SSL 可能接管域名证书"
-            }
-        fi
-    else
-        info "申请域名证书: ${DOMAIN}"
-        ${acme_sh} --issue --server letsencrypt -d "${DOMAIN}" \
-            --webroot /var/www/html --force 2>/dev/null && {
-            info "${DOMAIN} 证书申请成功"
-        } || {
-            warn "${DOMAIN} 证书申请失败，常见原因："
-            warn "1. 域名 ${DOMAIN} 的 DNS 未指向本机 IP ${PUBLIC_IP}"
-            warn "2. 端口 80 被防火墙/安全组阻挡"
-        }
-    fi
-    echo ""
-}
 # ---- 生成根页面 HTML ----
 gen_root_html() {
     local html="/var/www/html/index.html"
@@ -644,10 +595,10 @@ setup_cron_renew() {
     info "配置证书自动续期 ..."
     local acme_sh="${HOME}/.acme.sh/acme.sh"
 
-    # 每天凌晨 3 点检查续期（acme.sh 自动使用 webroot 模式）
-    if ! (crontab -l 2>/dev/null | grep -q 'acme.sh.*--cron'); then
-        (crontab -l 2>/dev/null || true; echo "0 3 * * * ${acme_sh} --cron > /dev/null 2>&1") | crontab -
-        info "已添加续期 crontab（每日 3:00 检查）"
+    # 每天凌晨 3 点检查 IP 证书续期（只续 IP，域名证书由 Caddy 自动 SSL 管理）
+    if ! (crontab -l 2>/dev/null | grep -q 'acme.sh.*--cron.*${PUBLIC_IP}'); then
+        (crontab -l 2>/dev/null || true; echo "0 3 * * * ${acme_sh} --cron -d ${PUBLIC_IP} > /dev/null 2>&1") | crontab -
+        info "已添加续期 crontab（每日 3:00 检查 IP 证书）"
     else
         info "续期 crontab 已存在"
     fi
@@ -744,11 +695,6 @@ main() {
     # 后续运行：证书已存在，直接检查续期
     start_temp_caddy
     issue_cert
-
-    # 如果设置了域名，管理域名证书（不存在则申请，存在则检查有效期）
-    if [[ -n "$DOMAIN" ]]; then
-        manage_domain_cert
-    fi
 
     stop_temp_caddy
 
