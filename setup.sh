@@ -160,7 +160,7 @@ install_caddy() {
             info "通过 apt 安装 Caddy ..."
             apt-get install -y -qq debian-archive-keyring apt-transport-https 2>/dev/null || true
             curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' 2>/dev/null | \
-                gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null || true
+                gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null || true
             curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' 2>/dev/null | \
                 tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null || true
             apt-get update -qq && apt-get install -y -qq caddy && installed=1 || true
