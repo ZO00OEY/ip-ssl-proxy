@@ -548,7 +548,6 @@ configure_caddy() {
 
 {
     admin off
-    auto_https off
 }
 
 # -------- 端口 80: ACME 验证 + HTTP 访问 --------
@@ -568,31 +567,13 @@ configure_caddy() {
 
 CADDYEOF
 
-    # -------- 端口 443: 同时加载 IP 证书和域名证书（SNI 自动选择）--------
-    local acme_home="${HOME}/.acme.sh"
-    local site_addr=":443"
-    [[ -n "$DOMAIN" ]] && site_addr="${DOMAIN}, :443"
-
-    cat >> "$caddyfile" <<ROUTE
-
-${site_addr} {
-    tls ${CERT_FILE} ${KEY_FILE}
-ROUTE
-
-    # 有域名时添加域名证书
-    if [[ -n "$DOMAIN" ]]; then
-        cat >> "$caddyfile" <<ROUTE
-    tls ${acme_home}/${DOMAIN}_ecc/fullchain.cer ${acme_home}/${DOMAIN}_ecc/${DOMAIN}.key
-ROUTE
-    fi
-
-    # 写入每个服务的路由
+    # -------- 构建公共路由（IP 和域名共用）--------
+    local routes=""
     for svc in "${SERVICES_LIST[@]}"; do
         IFS='|' read -r path host port sub <<< "$svc"
         [[ -z "$host" ]] && host="127.0.0.1"
         local strip_path="${path%/}"
-
-        cat >> "$caddyfile" <<ROUTE
+        routes+="
     # ${strip_path} → ${host}:${port}
     redir ${strip_path} ${path} 308
     handle_path ${path}* {
@@ -600,12 +581,10 @@ ROUTE
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-For {remote_host}
         }
-    }
-ROUTE
+    }"
     done
 
-    # 根路径和日志
-    cat >> "$caddyfile" <<ROUTE
+    routes+="
 
     # 根路径 - 服务列表页
     handle / {
@@ -618,10 +597,27 @@ ROUTE
             roll_size 50mb
             roll_keep 3
         }
-    }
+    }"
+
+    # -------- 端口 443: IP 证书反向代理（acme.sh）--------
+    cat >> "$caddyfile" <<ROUTE
+# 公网 IP 入口 — 使用 acme.sh 签发的 IP 证书
+:443 {
+    tls ${CERT_FILE} ${KEY_FILE}${routes}
 }
 
 ROUTE
+
+    # -------- 域名区块（Caddy 自动 SSL）--------
+    if [[ -n "$DOMAIN" ]]; then
+        cat >> "$caddyfile" <<ROUTE
+# 域名入口 — Caddy 自动申请 SSL 证书
+${DOMAIN} {${routes}
+}
+
+ROUTE
+        info "已添加主域名 ${DOMAIN}（Caddy 自动 SSL）"
+    fi
 
     info "Caddy 配置已生成，共 ${#SERVICES_LIST[@]} 个服务路由"
 }
