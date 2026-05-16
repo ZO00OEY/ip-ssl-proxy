@@ -972,17 +972,19 @@ show_menu() {
 # Main
 # ============================================================
 main() {
-    show_menu
-    read -r CHOICE </dev/tty 2>/dev/null || true
-    echo ""
+    while true; do
+        show_menu
+        read -r CHOICE </dev/tty 2>/dev/null || true
+        echo ""
 
-    case "$CHOICE" in
-        1) mode_ip ;;
-        2) mode_domain ;;
-        3) mode_paired ;;
-        q|Q|0) info "已退出" ; exit 0 ;;
-        *) error "无效选项，请输入 1、2、3 或 0" ; exit 1 ;;
-    esac
+        case "$CHOICE" in
+            1) mode_ip ;;
+            2) mode_domain ;;
+            3) mode_paired ;;
+            q|Q|0) info "已退出" ; exit 0 ;;
+            *) error "无效选项，请输入 1、2、3 或 0" ;;
+        esac
+    done
 }
 
 main "$@"
