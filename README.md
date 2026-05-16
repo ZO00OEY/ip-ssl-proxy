@@ -5,7 +5,7 @@
 两种使用方式：
 
 - **子路径访问**（无需域名、无需 ICP 备案）：`https://IP/couchdb/` → 后端服务。适用于 Obsidian Livesync 等支持子路径配置的应用
-- **子域名访问**（需要域名）：`https://st.你的域名/` → SillyTavern。适用于使用绝对路径导致 CSS 错乱的应用
+- **子域名访问**（需要域名）：`https://sillytavern.你的域名/` → SillyTavern。适用于使用绝对路径导致 CSS 错乱的应用
 
 ---
 
@@ -63,7 +63,7 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
 
 ```
 https://IP/couchdb/  →  CouchDB (5984)
-https://IP/st/       →  SillyTavern (8000)
+https://IP/sillytavern/  →  SillyTavern (8000)
 https://IP/mihomo/   →  Mihomo 面板 (9097)
 https://IP/reader/   →  阅读 (4396)
 https://IP/hermes/   →  Hermes Agent (9119)
@@ -76,8 +76,8 @@ Caddy 同时监听 80（HTTP→HTTPS 自动跳转）和 443（IP SSL 加密 + �
 当应用使用绝对路径（如 SillyTavern 的 `/js/script.js`），子路径下 CSS/JS 会加载失败。子域名方式可以解决：
 
 ```
-https://st.你的域名/  →  SillyTavern ✅ 一切正常
-https://IP/st/       →  SillyTavern ❌ CSS 错乱（但仍可用）
+https://sillytavern.你的域名/  →  SillyTavern ✅ 一切正常
+https://IP/sillytavern/       →  SillyTavern ❌ CSS 错乱（但仍可用）
 ```
 
 配置 DNS A 记录后，Caddy 自动为子域名签发可信 SSL 证书，浏览器不再报"不安全"。
@@ -108,7 +108,7 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
 - 为带子域名的服务添加 `https://子域名.你的域名/` 入口
 - Caddy 自动签发 SSL 证书并续期
 
-默认子域名 `st` 对应 SillyTavern：`https://st.你的域名/`
+默认子域名 `sillytavern` 对应 SillyTavern：`https://sillytavern.你的域名/`
 
 ---
 
@@ -117,7 +117,7 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
 | 路径（默认） | 路径（设域名后） | 目标地址 | 说明 |
 |------|------|----------|------|
 | `/couchdb/` | `/couchdb/` | `127.0.0.1:5984` | Obsidian Livesync |
-| `/tavern/` | `/st/` | `127.0.0.1:8000` | SillyTavern |
+| `/sillytavern/` | `/sillytavern/` | `127.0.0.1:8000` | SillyTavern |
 | `/mihomo/` | `/mihomo/` | `127.0.0.1:9097` | Mihomo 面板 |
 | `/reader/` | `/reader/` | `127.0.0.1:4396` | 阅读 |
 | `/hermes/` | `/hermes/` | `127.0.0.1:9119` | Hermes Agent |

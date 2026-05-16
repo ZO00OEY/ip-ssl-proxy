@@ -33,7 +33,7 @@ set -euo pipefail
 
 DEFAULT_SERVICES=(
     "/couchdb/|127.0.0.1|5984|"
-    "/tavern/|127.0.0.1|8000|st"
+    "/sillytavern/|127.0.0.1|8000|sillytavern"
     "/mihomo/|127.0.0.1|9097|"
     "/reader/|127.0.0.1|4396|"
     "/hermes/|127.0.0.1|9119|"
