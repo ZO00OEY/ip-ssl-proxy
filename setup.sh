@@ -143,69 +143,6 @@ prompt_ip() {
     fi
 }
 
-prompt_prefixes() {
-    if [[ -z "$DOMAIN" ]]; then
-        return
-    fi
-    echo ""
-    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  选择要设置子域名的服务                              │${NC}"
-    echo -e "${YELLOW}│  被选中的服务会额外获得 https://前缀.域名 入口      │${NC}"
-    echo -e "${YELLOW}│  编号多选用空格分隔，直接回车跳过则全不设置        │${NC}"
-    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
-    echo ""
-
-    local names=() ports=() defaults=() subs=()
-    local index=1
-    for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r path h p sub <<< "$svc"
-        [[ -z "$h" ]] && h="127.0.0.1"
-        local name="${path//\//}"
-        local def="${sub:-$name}"
-        names+=("$name"); ports+=("$p"); defaults+=("$def"); subs+=("$sub")
-        echo "  ${index}. ${name} (${p})  默认子域名: ${def}"
-        index=$((index + 1))
-    done
-    echo ""
-    echo -n "  选择编号（多选用空格分隔，直接回车跳过）: "
-    read -r selection </dev/tty 2>/dev/null || true
-    echo ""
-
-    local selected_indices=()
-    for num in $selection; do
-        if [[ "$num" =~ ^[0-9]+$ ]] && (( num >= 1 && num <= ${#names[@]} )); then
-            selected_indices+=($((num - 1)))
-        fi
-    done
-
-    local new_services=()
-    for i in "${!names[@]}"; do
-        IFS='|' read -r path h p sub_orig <<< "${SERVICES_LIST[$i]}"
-        [[ -z "$h" ]] && h="127.0.0.1"
-        local def="${defaults[$i]}" name="${names[$i]}" port="${ports[$i]}"
-
-        local matched=false
-        for sel in "${selected_indices[@]}"; do
-            [[ "$sel" -eq "$i" ]] && matched=true && break
-        done
-
-        if $matched; then
-            echo -n "  ${name} (${port}) 子域名前缀 [${def}]: "
-            read -r prefix </dev/tty 2>/dev/null || true
-            prefix="$(printf '%s' "$prefix" | LC_ALL=C tr -cd 'a-zA-Z0-9')"
-            [[ -n "$prefix" ]] && def="$prefix"
-            new_services+=("/${def}/|${h}|${p}|${def}")
-        else
-            # 未选中，保持原始配置不变（保留原有 sub 字段）
-            new_services+=("${SERVICES_LIST[$i]}")
-        fi
-    done
-    SERVICES_LIST=("${new_services[@]}")
-
-    echo ""
-    info "子域名前缀已确认"
-}
-
 detect_os() {
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
@@ -419,45 +356,30 @@ issue_cert() {
 issue_domain_certs() {
     [[ -z "$DOMAIN" ]] && return
     local acme_sh="${HOME}/.acme.sh/acme.sh"
-    local domains=()
-    for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r _ _ _ sub <<< "$svc"
-        [[ -n "$sub" ]] && domains+=("${sub}.${DOMAIN}")
-    done
-    # 主域名放最后签发（SAN 包含子域名）
-    [[ -n "$DOMAIN" ]] && domains+=("${DOMAIN}")
 
     echo ""
     echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
     echo -e "${YELLOW}│  域名证书（acme.sh webroot 模式）                    │${NC}"
     echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
 
-    local issued_any=false
-    for domain in "${domains[@]}"; do
-        local cert_dir="${HOME}/.acme.sh/${domain}_ecc"
-        local cert_file="${cert_dir}/fullchain.cer"
-        local key_file="${cert_dir}/${domain}.key"
+    local cert_dir="${HOME}/.acme.sh/${DOMAIN}_ecc"
+    local cert_file="${cert_dir}/fullchain.cer"
+    local key_file="${cert_dir}/${DOMAIN}.key"
 
-        if [[ -f "$cert_file" ]] && [[ -f "$key_file" ]]; then
-            info "域名证书已存在: ${domain}"
-            continue
-        fi
-
-        info "申请域名证书: ${domain}"
-        ${acme_sh} --issue --server letsencrypt -d "${domain}" \
+    if [[ -f "$cert_file" ]] && [[ -f "$key_file" ]]; then
+        info "域名证书已存在: ${DOMAIN}"
+    else
+        info "申请域名证书: ${DOMAIN}"
+        ${acme_sh} --issue --server letsencrypt -d "${DOMAIN}" \
             --webroot /var/www/html --force 2>/dev/null && {
-            info "${domain} 证书申请成功"
-            issued_any=true
+            info "${DOMAIN} 证书申请成功"
         } || {
-            warn "${domain} 证书申请失败，常见原因："
-            warn "1. 域名 ${domain} 的 DNS 未指向本机 IP ${PUBLIC_IP}"
+            warn "${DOMAIN} 证书申请失败，常见原因："
+            warn "1. 域名 ${DOMAIN} 的 DNS 未指向本机 IP ${PUBLIC_IP}"
             warn "2. 端口 80 被防火墙/安全组阻挡"
         }
-    done
-    if $issued_any; then
-        echo ""
-        info "域名证书已全部就绪"
     fi
+    echo ""
 }
 
 # ---- 生成根页面 HTML ----
@@ -638,37 +560,14 @@ configure_caddy() {
         root * /var/www/html
         file_server
     }
-    # 其余请求跳转 HTTPS（保留原始域名）
-    handle {
-        redir https://{host}{uri} permanent
     }
 }
 
 CADDYEOF
 
-    # ---- 子域名区块（如果设置了 DOMAIN）----
-    # 使用 acme.sh 签发的证书，通过 tls 指令明确指定
+    # ---- 主域名区块 ----
     local acme_home="${HOME}/.acme.sh"
     if [[ -n "$DOMAIN" ]]; then
-        for svc in "${SERVICES_LIST[@]}"; do
-            IFS='|' read -r path host port sub <<< "$svc"
-            [[ -z "$host" ]] && host="127.0.0.1"
-            [[ -z "$sub" ]] && continue
-
-            local subdomain="${sub}.${DOMAIN}"
-            cat >> "$caddyfile" <<ROUTE
-
-# ${subdomain} → ${host}:${port}
-${subdomain} {
-    tls ${acme_home}/${subdomain}_ecc/fullchain.cer ${acme_home}/${subdomain}_ecc/${subdomain}.key
-    reverse_proxy ${host}:${port} {
-        header_up X-Forwarded-Proto https
-        header_up X-Forwarded-For {remote_host}
-    }
-}
-ROUTE
-        done
-        # 主域名 → 导航页
         cat >> "$caddyfile" <<ROUTE
 
 # ${DOMAIN} → 导航页
@@ -678,16 +577,7 @@ ${DOMAIN} {
     file_server
 }
 ROUTE
-    fi
-
-    # 统计子域名数量并添加 tls 指令
-    local sub_count=0
-    if [[ -n "$DOMAIN" ]]; then
-        for svc in "${SERVICES_LIST[@]}"; do
-            IFS='|' read -r _ _ _ s <<< "$svc"
-            [[ -n "$s" ]] && sub_count=$((sub_count + 1))
-        done
-        info "已添加子域名路由（共 ${sub_count} 个），主域名 ${DOMAIN} → 导航页"
+        info "已添加主域名 ${DOMAIN} → 导航页"
     fi
 
     # -------- 端口 443: 证书反向代理（catch-all，使用 IP 证书兜底）--------
@@ -789,43 +679,31 @@ check_domain_certs() {
     echo -e "${YELLOW}│  验证域名 SSL 证书...                               │${NC}"
     echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
 
-    local domains_to_check=("${DOMAIN}")
-    for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r _ _ _ sub <<< "$svc"
-        [[ -n "$sub" ]] && domains_to_check+=("${sub}.${DOMAIN}")
-    done
+    local cert_file="${HOME}/.acme.sh/${DOMAIN}_ecc/fullchain.cer"
+    local key_file="${HOME}/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key"
+    echo -n "  ${DOMAIN}  ...  "
 
-    local all_ok=true
-    for domain in "${domains_to_check[@]}"; do
-        local cert_file="${HOME}/.acme.sh/${domain}_ecc/fullchain.cer"
-        local key_file="${HOME}/.acme.sh/${domain}_ecc/${domain}.key"
-        echo -n "  ${domain}  ...  "
-
-        if [[ -f "$cert_file" ]] && [[ -f "$key_file" ]]; then
-            local expiry
-            expiry=$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | cut -d= -f2)
-            local now_epoch
-            now_epoch=$(date +%s)
-            local expiry_epoch
-            expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
-            if [[ -n "$expiry" ]] && [[ "$expiry_epoch" -gt "$now_epoch" ]]; then
-                local days_left=$(( (expiry_epoch - now_epoch) / 86400 ))
-                echo -e "${GREEN}有效${NC}（${days_left} 天后到期）"
-            else
-                echo -e "${RED}已过期${NC}"
-                all_ok=false
-            fi
+    if [[ -f "$cert_file" ]] && [[ -f "$key_file" ]]; then
+        local expiry
+        expiry=$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | cut -d= -f2)
+        local now_epoch
+        now_epoch=$(date +%s)
+        local expiry_epoch
+        expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
+        if [[ -n "$expiry" ]] && [[ "$expiry_epoch" -gt "$now_epoch" ]]; then
+            local days_left=$(( (expiry_epoch - now_epoch) / 86400 ))
+            echo -e "${GREEN}有效${NC}（${days_left} 天后到期）"
+            echo ""
+            info "域名 SSL 证书有效"
         else
-            echo -e "${RED}证书文件缺失${NC}"
-            all_ok=false
+            echo -e "${RED}已过期${NC}"
+            echo ""
+            warn "域名证书已过期，请重新申请"
         fi
-    done
-
-    echo ""
-    if $all_ok; then
-        info "域名 SSL 证书全部有效"
     else
-        warn "部分域名证书存在问题，请检查 acme.sh 日志"
+        echo -e "${RED}证书文件缺失${NC}"
+        echo ""
+        warn "域名证书未找到，请检查 acme.sh 日志"
     fi
 }
 
@@ -836,33 +714,19 @@ print_summary() {
     echo -e "${GREEN}========================================${NC}"
     echo ""
     echo -e "  入口地址:  ${GREEN}https://${PUBLIC_IP}${NC}"
-    echo -e "  HTTP 跳转:  http://${PUBLIC_IP}  →  https://${PUBLIC_IP}"
     if [[ -n "$DOMAIN" ]]; then
-        echo -e "  主站:       ${GREEN}https://${DOMAIN}${NC}  →  导航页"
+        echo -e "  主站:       ${GREEN}https://${DOMAIN}${NC}"
     fi
     echo ""
-    local sub_list=()
-    local path_list=()
+    echo -e "  ${YELLOW}可用服务:${NC}"
     for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r path h port sub <<< "$svc"
+        IFS='|' read -r path h port _ <<< "$svc"
         [[ -z "$h" ]] && h="127.0.0.1"
-        if [[ -n "$sub" && -n "$DOMAIN" ]]; then
-            sub_list+=("    https://${sub}.${DOMAIN}/  →  ${h}:${port}")
-            path_list+=("    https://${PUBLIC_IP}${path}  →  ${h}:${port}  |  https://${sub}.${DOMAIN}/")
-        else
-            path_list+=("    https://${PUBLIC_IP}${path}  →  ${h}:${port}")
-        fi
+        echo -e "    https://${PUBLIC_IP}${path}  →  ${h}:${port}"
     done
-    if [[ ${#sub_list[@]} -gt 0 ]]; then
-        echo -e "  ${YELLOW}子域名路由（${#sub_list[@]} 个）:${NC}"
-        for l in "${sub_list[@]}"; do echo -e "$l"; done
-        echo ""
-    fi
-    echo -e "  ${YELLOW}子路径路由（${#path_list[@]} 个）:${NC}"
-    for l in "${path_list[@]}"; do echo -e "$l"; done
     echo ""
     if [[ -n "$DOMAIN" ]]; then
-        echo -e "  ${GREEN}域名访问已启用！${NC}"
+        echo -e "  ${GREEN}域名证书已配置！${NC}"
         echo "  证书续期: acme.sh 每日 3:00 自动检查"
         echo ""
     fi
@@ -874,8 +738,7 @@ print_summary() {
     echo ""
     echo -e "${YELLOW}  重要提示：${NC}"
     echo "  1. 云服务商安全组需放行端口 443 (HTTPS) 和 80 (HTTP)"
-    echo "  2. 访问 http://IP 会自动跳转到 https://IP"
-    echo "  3. 原始 http://IP:端口 仍然可以直接访问（旁路）"
+    echo "  2. 原始 http://IP:端口 仍然可以直接访问（旁路）"
     echo ""
     echo -e "${GREEN}  一键测试: curl -k https://${PUBLIC_IP}/couchdb/${NC}"
     echo ""
@@ -899,7 +762,6 @@ main() {
     detect_ip
     prompt_ip
     prompt_domain
-    prompt_prefixes
     install_acme
     install_caddy
 
@@ -918,10 +780,6 @@ main() {
     gen_root_html
     configure_caddy
     setup_cron_renew
-    echo ""
-    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│  域名 SSL 证书（Caddy 自动 SSL）                    │${NC}"
-    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
     start_caddy
     check_domain_certs
     print_summary
