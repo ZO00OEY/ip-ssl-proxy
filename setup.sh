@@ -548,11 +548,11 @@ configure_caddy() {
 
 {
     admin off
+    auto_https off
 }
 
-# -------- 端口 80: ACME 验证 + HTTP → HTTPS 跳转 --------
+# -------- 端口 80: ACME 验证 + HTTP 访问 --------
 :80 {
-    # 先处理 Let's Encrypt 验证请求
     @acme {
         path /.well-known/acme-challenge/*
     }
@@ -560,6 +560,9 @@ configure_caddy() {
         root * /var/www/html
         file_server
     }
+    handle {
+        root * /var/www/html
+        file_server
     }
 }
 
