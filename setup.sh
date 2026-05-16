@@ -93,6 +93,23 @@ check_root() {
     fi
 }
 
+prompt_domain() {
+    if [[ -z "${DOMAIN:-}" ]]; then
+        echo ""
+        echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+        echo -e "${YELLOW}│  可选：输入你的域名以启用子域名 HTTPS 访问          │${NC}"
+        echo -e "${YELLOW}│  格式如: example.com                               │${NC}"
+        echo -e "${YELLOW}│  留空直接回车则跳过，仅使用 IP 方式访问            │${NC}"
+        echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+        echo -n "  域名: "
+        read -r DOMAIN </dev/tty 2>/dev/null || true
+        echo ""
+    fi
+    if [[ -n "$DOMAIN" ]]; then
+        info "域名已设置: ${DOMAIN}"
+    fi
+}
+
 detect_ip() {
     PUBLIC_IP="${PUBLIC_IP:-}"
     if [[ -z "$PUBLIC_IP" ]]; then
@@ -310,17 +327,28 @@ gen_root_html() {
     local html="/var/www/html/index.html"
     mkdir -p /var/www/html
 
-    local list_items=""
+    local cards=""
     for svc in "${SERVICES_LIST[@]}"; do
         IFS='|' read -r p h port sub <<< "$svc"
         local name="${p//\//}"
         [[ -z "$name" ]] && continue
-        local links="<a href=\"${p}\">IP:${p}</a>"
+        local ip_link="https://${PUBLIC_IP}${p}"
+        local links="<a href=\"${ip_link}\" class=\"link\">${ip_link}</a>"
         if [[ -n "$sub" && -n "$DOMAIN" ]]; then
-            links+=" | <a href=\"https://${sub}.${DOMAIN}/\">${sub}.${DOMAIN}</a>"
+            local domain_link="https://${sub}.${DOMAIN}/"
+            links+="<a href=\"${domain_link}\" class=\"link sub\">${domain_link}</a>"
         fi
-        list_items+="        <li>${links} <span style=\"color:#666;\">(${h}:${port})</span></li>\\n"
+        cards+="        <div class=\"card\">
+          <div class=\"card-title\">${name}</div>
+          <div class=\"card-links\">${links}</div>
+        </div>
+"
     done
+
+    local domain_section=""
+    if [[ -n "$DOMAIN" ]]; then
+        domain_section="<p class=\"domain\">🌐 <a href=\"https://${DOMAIN}\">${DOMAIN}</a></p>"
+    fi
 
     cat > "$html" <<HTML
 <!DOCTYPE html>
@@ -330,24 +358,117 @@ gen_root_html() {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Caddy + IP SSL</title>
 <style>
-body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 60px auto; padding: 0 20px; line-height: 1.6; }
-h1 { color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
-ul { list-style: none; padding: 0; }
-li { padding: 8px 12px; margin: 4px 0; background: #f5f5f5; border-radius: 6px; }
-li:hover { background: #e8f5e9; }
-a { color: #2e7d32; text-decoration: none; font-weight: 500; }
-.ip { color: #888; font-size: 0.9em; }
-.footer { margin-top: 40px; font-size: 0.85em; color: #999; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  color: #e2e8f0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+.container {
+  width: 100%;
+  max-width: 560px;
+}
+.header {
+  text-align: center;
+  margin-bottom: 2.5rem;
+}
+.header h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #f1f5f9;
+  letter-spacing: -0.02em;
+}
+.header .ip {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin-top: 0.4rem;
+  font-family: "SF Mono", "Fira Code", monospace;
+}
+.domain {
+  text-align: center;
+  margin-top: 0.3rem;
+}
+.domain a {
+  color: #38bdf8;
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+.domain a:hover {
+  text-decoration: underline;
+}
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.card {
+  background: rgba(30, 41, 59, 0.6);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  transition: border-color 0.2s;
+}
+.card:hover {
+  border-color: rgba(148, 163, 184, 0.25);
+}
+.card-title {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+}
+.card-links {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.link {
+  font-size: 0.9rem;
+  color: #38bdf8;
+  text-decoration: none;
+  word-break: break-all;
+  transition: color 0.15s;
+}
+.link:hover {
+  color: #7dd3fc;
+}
+.link.sub {
+  color: #a78bfa;
+  font-size: 0.85rem;
+}
+.link.sub:hover {
+  color: #c4b5fd;
+}
+.footer {
+  text-align: center;
+  margin-top: 2.5rem;
+  font-size: 0.75rem;
+  color: #475569;
+}
 </style>
 </head>
 <body>
-<h1>Caddy 反向代理运行中</h1>
-<p class="ip">${PUBLIC_IP} — IP SSL</p>
-<ul>
-${list_items}
-</ul>
-<div class="footer">
-  HTTP 自动跳转 HTTPS &middot; 证书自动续期 &middot; 路径路由反向代理
+<div class="container">
+  <div class="header">
+    <h1>Caddy 反向代理</h1>
+    <p class="ip">${PUBLIC_IP}</p>
+    ${domain_section}
+  </div>
+  <div class="cards">
+${cards}
+  </div>
+  <div class="footer">
+    IP SSL &middot; HTTP → HTTPS 自动跳转 &middot; 证书自动续期
+  </div>
 </div>
 </body>
 </html>
@@ -559,6 +680,7 @@ main() {
     detect_os
     install_deps
     detect_ip
+    prompt_domain
     install_acme
     install_caddy
 
