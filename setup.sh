@@ -2,21 +2,12 @@
 set -euo pipefail
 
 # ============================================================
-# Caddy + SSL 多服务反向代理一键部署脚本（IP + 域名）
+# Caddy + SSL 多服务反向代理一键部署脚本
 #
-# 功能: 为公网 IP 申请 SSL 证书，部署 Caddy 反向代理，
-#       通过路径路由将 HTTPS 流量转发到多个本地服务。
-#       同时监听 80 端口做 HTTP → HTTPS 自动跳转。
-#
-# 用法:
-#   curl -fsSL https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh | bash
-#
-# 带域名（启用子域名访问，Caddy 自动签发 SSL 证书）:
-#   DOMAIN=yourdomain.com curl -fsSL ... | bash
-#
-# 自定义服务列表:
-#   SERVICES="/app1/|3000,/app2/|4000" curl -fsSL ... | bash
-#   SERVICES="/app1/|3000|sub" DOMAIN=yourdomain.com curl -fsSL ... | bash
+# 三种模式:
+#   1. IP 证书模式 — 纯 IP 证书，配置文件不含域名
+#   2. 域名证书模式 — 纯域名证书，配置文件不含 IP
+#   3. 子域名管理 — 添加/查看子域名证书
 # ============================================================
 
 # ============================================================
@@ -25,10 +16,7 @@ set -euo pipefail
 # 格式: "路径|后端主机|端口|子域名"
 # 路径建议用 /name/ 格式（末尾保留斜杠）
 # 主机默认为 127.0.0.1，可省略
-# 子域名可选，设置后同时通过 https://子域名.你的域名 访问
-# 设置 DOMAIN 环境变量启用子域名访问
-#
-# 可通过 SERVICES 环境变量覆盖，格式同上，用逗号分隔
+# 可通过 SERVICES 环境变量覆盖，用逗号分隔
 # ============================================================
 
 DEFAULT_SERVICES=(
@@ -40,8 +28,7 @@ DEFAULT_SERVICES=(
 )
 
 DOMAIN="${DOMAIN:-}"
-
-# ============================================================
+PUBLIC_IP="${PUBLIC_IP:-}"
 
 # ---- 颜色 ----
 RED='\033[0;31m'
@@ -69,21 +56,11 @@ parse_services() {
     fi
 
     info "服务列表:"
-    local has_subdomain=false
     for svc in "${SERVICES_LIST[@]}"; do
         IFS='|' read -r p h port sub <<< "$svc"
         [[ -z "$h" ]] && h="127.0.0.1"
-        local line="    ${p}  →  ${h}:${port}"
-        if [[ -n "$sub" && -n "$DOMAIN" ]]; then
-            line+="  (https://${sub}.${DOMAIN}/)"
-            has_subdomain=true
-        fi
-        echo "$line"
+        echo "    ${p}  →  ${h}:${port}"
     done
-    if [[ "$has_subdomain" == "true" ]]; then
-        echo ""
-        info "子域名访问已启用（DOMAIN=${DOMAIN}），Caddy 将自动签发 SSL 证书"
-    fi
 }
 
 check_root() {
@@ -97,19 +74,19 @@ prompt_domain() {
     if [[ -z "${DOMAIN:-}" ]]; then
         echo ""
         echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-        echo -e "${YELLOW}│  可选：输入你的域名以启用子域名 HTTPS 访问          │${NC}"
+        echo -e "${YELLOW}│  输入你的域名                                      │${NC}"
         echo -e "${YELLOW}│  格式如: example.com                               │${NC}"
-        echo -e "${YELLOW}│  留空直接回车则跳过，仅使用 IP 方式访问            │${NC}"
         echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
         echo -n "  域名: "
         read -r DOMAIN </dev/tty 2>/dev/null || true
-        # 严格清理：只保留字母、数字、点、横线
         DOMAIN="$(printf '%s' "$DOMAIN" | LC_ALL=C tr -cd 'a-zA-Z0-9.-')"
         echo ""
     fi
-    if [[ -n "$DOMAIN" ]]; then
-        info "域名: ${DOMAIN}"
+    if [[ -z "$DOMAIN" ]]; then
+        error "域名不能为空"
+        exit 1
     fi
+    info "域名: ${DOMAIN}"
 }
 
 detect_ip() {
@@ -119,7 +96,6 @@ detect_ip() {
         PUBLIC_IP=$(curl -s --max-time 10 https://api.ipify.org || curl -s --max-time 10 https://icanhazip.com)
         if [[ -z "$PUBLIC_IP" ]]; then
             error "无法检测公网 IP，请手动设置 PUBLIC_IP 环境变量"
-            error "示例: PUBLIC_IP=1.2.3.4 bash setup.sh"
             exit 1
         fi
     fi
@@ -192,10 +168,8 @@ install_acme() {
 
     info "安装 acme.sh ..."
 
-    # 先试默认 GitHub 源
     curl -fsSL https://get.acme.sh | bash 2>/dev/null || true
 
-    # 默认源失败（国内服务器常见），切中国镜像
     if [[ ! -f "$acme_sh" ]]; then
         warn "默认源安装失败，尝试中国镜像（gitlink）..."
         CFG_MIRROR=gitlink curl -fsSL https://get.acme.sh | bash 2>/dev/null || true
@@ -266,23 +240,16 @@ install_caddy() {
     info "Caddy 安装完成: $(caddy version)"
 }
 
-# ---- 启动临时 Caddy（仅端口 80，用于首次证书申请） ----
+# ---- 临时 Caddy（端口 80，用于证书申请） ----
 start_temp_caddy() {
-    local cert_dir="${HOME}/.acme.sh/${PUBLIC_IP}_ecc"
-    if [[ -f "${cert_dir}/fullchain.cer" ]] && [[ -f "${cert_dir}/${PUBLIC_IP}.key" ]]; then
-        return
-    fi
-
-    # 停止可能已运行的 Caddy（apt 安装后会自动启动），
-    # 换成我们自己的临时配置来响应 ACME 验证
     if pgrep -x caddy &>/dev/null; then
-        info "停止已运行的 Caddy，启动临时配置用于证书验证..."
+        info "停止已运行的 Caddy..."
         systemctl stop caddy 2>/dev/null || true
         caddy stop 2>/dev/null || true
         sleep 1
     fi
 
-    # 确保端口 80 可用，供临时 Caddy 做 ACME 验证
+    # 确保端口 80 可用
     if command -v ss &>/dev/null; then
         if ss -tlnp 2>/dev/null | grep -q ':80 '; then
             warn "端口 80 被占用，强制释放..."
@@ -290,7 +257,7 @@ start_temp_caddy() {
             caddy stop 2>/dev/null || true
             sleep 2
             if ss -tlnp 2>/dev/null | grep -q ':80 '; then
-                warn "systemctl 未完全释放，使用 fuser 强制释放..."
+                warn "使用 fuser 强制释放..."
                 fuser -k 80/tcp 2>/dev/null || true
                 sleep 1
             fi
@@ -320,13 +287,12 @@ stop_temp_caddy() {
         kill "$TEMP_CADDY_PID" 2>/dev/null || true
         wait "$TEMP_CADDY_PID" 2>/dev/null || true
     fi
-    # 也尝试用 caddy stop（处理 caddy start 启动的情况）
     caddy stop --config /etc/caddy/Caddyfile.temp 2>/dev/null || true
     rm -f /etc/caddy/Caddyfile.temp
 }
 
-# ---- 申请证书（webroot 模式） ----
-issue_cert() {
+# ---- 申请 IP 证书 ----
+issue_ip_cert() {
     local acme_sh="${HOME}/.acme.sh/acme.sh"
     local cert_dir="${HOME}/.acme.sh/${PUBLIC_IP}_ecc"
     CERT_FILE="${cert_dir}/fullchain.cer"
@@ -344,7 +310,6 @@ issue_cert() {
         ${acme_sh} --cron -d "${PUBLIC_IP}" 2>/dev/null || true
     else
         info "申请 Let's Encrypt IP 证书（webroot 模式）..."
-        info "Caddy 已在端口 80 响应验证请求"
         ${acme_sh} --issue \
             --server letsencrypt \
             -d "${PUBLIC_IP}" \
@@ -356,45 +321,88 @@ issue_cert() {
                 error "1. 端口 80 被防火墙阻挡（安全组/iptables 需放行）"
                 error "2. 公网 IP ${PUBLIC_IP} 并非本机公网 IP"
                 error "3. /var/www/html 目录不可写"
-                error ""
-                error "请检查后重试，或手动运行："
-                error "  ~/.acme.sh/acme.sh --issue --server letsencrypt -d ${PUBLIC_IP} --certificate-profile shortlived --webroot /var/www/html"
                 exit 1
             }
         info "证书申请成功！"
     fi
 
-    # 设置续期后重载 Caddy（webroot 模式）
     ${acme_sh} --install-cert -d "${PUBLIC_IP}" \
         --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
 }
+
+# ---- 申请域名证书 ----
+issue_domain_cert() {
+    local acme_sh="${HOME}/.acme.sh/acme.sh"
+    local cert_dir="${HOME}/.acme.sh/${DOMAIN}_ecc"
+    CERT_FILE="${cert_dir}/fullchain.cer"
+    KEY_FILE="${cert_dir}/${DOMAIN}.key"
+
+    echo ""
+    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}│  域名证书（acme.sh）                               │${NC}"
+    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+
+    mkdir -p /var/www/html
+
+    if [[ -f "$CERT_FILE" ]] && [[ -f "$KEY_FILE" ]]; then
+        info "域名证书已存在，检查有效期..."
+        local expiry
+        expiry=$(openssl x509 -in "$CERT_FILE" -noout -enddate 2>/dev/null | cut -d= -f2)
+        local now_epoch; now_epoch=$(date +%s)
+        local expiry_epoch; expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null || echo 0)
+        if [[ -n "$expiry" ]] && [[ "$expiry_epoch" -gt "$now_epoch" ]]; then
+            local days_left=$(( (expiry_epoch - now_epoch) / 86400 ))
+            echo -e "  ${DOMAIN}  ...  ${GREEN}有效${NC}（${days_left} 天后到期）"
+        else
+            echo -e "  ${DOMAIN}  ...  ${RED}已过期${NC}，重新申请..."
+            ${acme_sh} --issue --server letsencrypt -d "${DOMAIN}" \
+                --webroot /var/www/html --force 2>/dev/null || {
+                error "域名证书续期失败"
+                exit 1
+            }
+        fi
+    else
+        info "申请域名证书: ${DOMAIN}"
+        ${acme_sh} --issue --server letsencrypt -d "${DOMAIN}" \
+            --webroot /var/www/html --force 2>/dev/null || {
+            stop_temp_caddy
+            error "域名证书申请失败，常见原因："
+            error "1. 域名 ${DOMAIN} 的 DNS 未指向本机 IP"
+            error "2. 端口 80 被防火墙阻挡"
+            exit 1
+        }
+        info "域名证书申请成功！"
+    fi
+
+    ${acme_sh} --install-cert -d "${DOMAIN}" \
+        --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
+}
+
 # ---- 生成根页面 HTML ----
 gen_root_html() {
+    local base_url="${1:-}"
+    if [[ -z "$base_url" ]]; then
+        if [[ -n "$DOMAIN" ]]; then
+            base_url="https://${DOMAIN}"
+        else
+            base_url="https://${PUBLIC_IP}"
+        fi
+    fi
+
     local html="/var/www/html/index.html"
     mkdir -p /var/www/html
 
     local cards=""
     for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r p h port sub <<< "$svc"
+        IFS='|' read -r p h port _ <<< "$svc"
         local name="${p//\//}"
         [[ -z "$name" ]] && continue
-        local ip_link="https://${PUBLIC_IP}${p}"
-        local links="<a href=\"${ip_link}\" class=\"link\">${ip_link}</a>"
-        if [[ -n "$sub" && -n "$DOMAIN" ]]; then
-            local domain_link="https://${sub}.${DOMAIN}/"
-            links+="<a href=\"${domain_link}\" class=\"link sub\">${domain_link}</a>"
-        fi
         cards+="        <div class=\"card\">
           <div class=\"card-title\">${name}</div>
-          <div class=\"card-links\">${links}</div>
+          <div class=\"card-links\"><a href=\"${base_url}${p}\" class=\"link\">${base_url}${p}</a></div>
         </div>
 "
     done
-
-    local domain_section=""
-    if [[ -n "$DOMAIN" ]]; then
-        domain_section="<p class=\"domain\">🌐 <a href=\"https://${DOMAIN}\">${DOMAIN}</a></p>"
-    fi
 
     cat > "$html" <<HTML
 <!DOCTYPE html>
@@ -402,7 +410,7 @@ gen_root_html() {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Caddy + SSL（IP + 域名）</title>
+<title>Caddy + SSL</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -416,127 +424,56 @@ body {
   justify-content: center;
   padding: 2rem;
 }
-.container {
-  width: 100%;
-  max-width: 560px;
-}
-.header {
-  text-align: center;
-  margin-bottom: 2.5rem;
-}
-.header h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  color: #f1f5f9;
-  letter-spacing: -0.02em;
-}
-.footer-path {
-  text-align: center;
-  margin-top: 0.75rem;
-  font-size: 0.7rem;
-  color: #334155;
-}
-.domain {
-  text-align: center;
-  margin-top: 0.3rem;
-}
-.domain a {
-  color: #38bdf8;
-  font-size: 0.9rem;
-  text-decoration: none;
-}
-.domain a:hover {
-  text-decoration: underline;
-}
-.cards {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
+.container { width: 100%; max-width: 560px; }
+.header { text-align: center; margin-bottom: 2.5rem; }
+.header h1 { font-size: 1.5rem; font-weight: 600; color: #f1f5f9; letter-spacing: -0.02em; }
+.cards { display: flex; flex-direction: column; gap: 0.75rem; }
 .card {
   background: rgba(30, 41, 59, 0.6);
   backdrop-filter: blur(8px);
   border: 1px solid rgba(148, 163, 184, 0.1);
   border-radius: 12px;
   padding: 1rem 1.25rem;
-  transition: border-color 0.2s;
-}
-.card:hover {
-  border-color: rgba(148, 163, 184, 0.25);
 }
 .card-title {
-  font-size: 0.8rem;
-  font-weight: 500;
-  color: #94a3b8;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 0.5rem;
-}
-.card-links {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
+  font-size: 0.8rem; font-weight: 500; color: #94a3b8;
+  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;
 }
 .link {
-  font-size: 0.9rem;
-  color: #38bdf8;
-  text-decoration: none;
-  word-break: break-all;
-  transition: color 0.15s;
+  font-size: 0.9rem; color: #38bdf8; text-decoration: none; word-break: break-all;
 }
-.link:hover {
-  color: #7dd3fc;
-}
-.link.sub {
-  color: #a78bfa;
-  font-size: 0.85rem;
-}
-.link.sub:hover {
-  color: #c4b5fd;
-}
+.link:hover { color: #7dd3fc; }
 .footer {
-  text-align: center;
-  margin-top: 2.5rem;
-  font-size: 0.75rem;
-  color: #475569;
+  text-align: center; margin-top: 2.5rem; font-size: 0.75rem; color: #475569;
 }
 </style>
 </head>
 <body>
 <div class="container">
-  <div class="header">
-    <h1>本站导航</h1>
-    ${domain_section}
-  </div>
-  <div class="cards">
-${cards}
-  </div>
-  <div class="footer">
-    IP SSL / Domain SSL &middot; HTTP → HTTPS 自动跳转 &middot; 证书自动续期
-  </div>
-  <div class="footer-path">/var/www/html/index.html</div>
+  <div class="header"><h1>本站导航</h1></div>
+  <div class="cards">${cards}</div>
+  <div class="footer">SSL 加密 &middot; 证书自动续期</div>
 </div>
 </body>
 </html>
 HTML
 }
 
-# ---- 生成 Caddy 配置 ----
-configure_caddy() {
+# ---- 生成 Caddy 配置（IP 模式）----
+configure_caddy_ip() {
     local caddyfile="/etc/caddy/Caddyfile"
-    info "生成 Caddy 配置: ${caddyfile}"
-
+    info "生成 Caddy 配置（IP 模式）: ${caddyfile}"
     mkdir -p /etc/caddy
 
     cat > "$caddyfile" <<CADDYEOF
-# Caddy + SSL 多服务配置（IP + 域名）- 由 setup.sh 自动生成
+# Caddy + SSL IP 模式 - 由 setup.sh 自动生成
 # 公网 IP: ${PUBLIC_IP}
 
 {
     admin off
 }
 
-# -------- 端口 80: ACME 验证 + HTTP 访问 --------
+# -------- 端口 80: ACME 验证 --------
 :80 {
     @acme {
         path /.well-known/acme-challenge/*
@@ -551,15 +488,16 @@ configure_caddy() {
     }
 }
 
+# -------- 端口 443: IP 证书反代 --------
+${PUBLIC_IP}:443 {
+    tls ${CERT_FILE} ${KEY_FILE}
 CADDYEOF
 
-    # -------- 构建公共路由（IP 和域名共用）--------
-    local routes=""
     for svc in "${SERVICES_LIST[@]}"; do
-        IFS='|' read -r path host port sub <<< "$svc"
+        IFS='|' read -r path host port _ <<< "$svc"
         [[ -z "$host" ]] && host="127.0.0.1"
         local strip_path="${path%/}"
-        routes+="
+        cat >> "$caddyfile" <<ROUTE
     # ${strip_path} → ${host}:${port}
     redir ${strip_path} ${path} 308
     handle_path ${path}* {
@@ -567,53 +505,97 @@ CADDYEOF
             header_up X-Forwarded-Proto https
             header_up X-Forwarded-For {remote_host}
         }
-    }"
+    }
+ROUTE
     done
 
-    routes+="
-
-    # 根路径 - 服务列表页
+    cat >> "$caddyfile" <<ROUTE
     handle / {
         root * /var/www/html
         file_server
     }
-
     log {
         output file /var/log/caddy/access.log {
             roll_size 50mb
             roll_keep 3
         }
-    }"
-
-    # -------- 端口 443: IP 证书反向代理（acme.sh）--------
-    cat >> "$caddyfile" <<ROUTE
-# 公网 IP 入口 — 使用 acme.sh 签发的 IP 证书
-${PUBLIC_IP}:443 {
-    tls ${CERT_FILE} ${KEY_FILE}${routes}
+    }
 }
-
 ROUTE
-
-    # -------- 域名区块（Caddy 自动 SSL）--------
-    if [[ -n "$DOMAIN" ]]; then
-        cat >> "$caddyfile" <<ROUTE
-# 域名入口 — Caddy 自动申请 SSL 证书
-${DOMAIN} {${routes}
-}
-
-ROUTE
-        info "已添加主域名 ${DOMAIN}（Caddy 自动 SSL）"
-    fi
-
     info "Caddy 配置已生成，共 ${#SERVICES_LIST[@]} 个服务路由"
 }
 
-setup_cron_renew() {
-    info "配置证书自动续期 ..."
-    local acme_sh="${HOME}/.acme.sh/acme.sh"
+# ---- 生成 Caddy 配置（域名模式）----
+configure_caddy_domain() {
+    local caddyfile="/etc/caddy/Caddyfile"
+    info "生成 Caddy 配置（域名模式）: ${caddyfile}"
+    mkdir -p /etc/caddy
 
-    # 每天凌晨 3 点检查 IP 证书续期（只续 IP，域名证书由 Caddy 自动 SSL 管理）
-    if ! (crontab -l 2>/dev/null | grep -q 'acme.sh.*--cron.*${PUBLIC_IP}'); then
+    cat > "$caddyfile" <<CADDYEOF
+# Caddy + SSL 域名模式 - 由 setup.sh 自动生成
+# 域名: ${DOMAIN}
+
+{
+    admin off
+}
+
+# -------- 端口 80: ACME 验证 --------
+:80 {
+    @acme {
+        path /.well-known/acme-challenge/*
+    }
+    handle @acme {
+        root * /var/www/html
+        file_server
+    }
+    handle {
+        root * /var/www/html
+        file_server
+    }
+}
+
+# -------- 域名 SSL 反代 --------
+${DOMAIN} {
+    tls ${CERT_FILE} ${KEY_FILE}
+CADDYEOF
+
+    for svc in "${SERVICES_LIST[@]}"; do
+        IFS='|' read -r path host port _ <<< "$svc"
+        [[ -z "$host" ]] && host="127.0.0.1"
+        local strip_path="${path%/}"
+        cat >> "$caddyfile" <<ROUTE
+    # ${strip_path} → ${host}:${port}
+    redir ${strip_path} ${path} 308
+    handle_path ${path}* {
+        reverse_proxy ${host}:${port} {
+            header_up X-Forwarded-Proto https
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+ROUTE
+    done
+
+    cat >> "$caddyfile" <<ROUTE
+    handle / {
+        root * /var/www/html
+        file_server
+    }
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 50mb
+            roll_keep 3
+        }
+    }
+}
+ROUTE
+    info "Caddy 配置已生成，共 ${#SERVICES_LIST[@]} 个服务路由"
+}
+
+# ---- 证书续期 cron（仅 IP）----
+setup_cron_renew_ip() {
+    info "配置 IP 证书自动续期 ..."
+    local acme_sh="${HOME}/.acme.sh/acme.sh"
+    if ! (crontab -l 2>/dev/null | grep -q 'acme.sh.*--cron.*159.75.239.97'); then
         (crontab -l 2>/dev/null || true; echo "0 3 * * * ${acme_sh} --cron -d ${PUBLIC_IP} > /dev/null 2>&1") | crontab -
         info "已添加续期 crontab（每日 3:00 检查 IP 证书）"
     else
@@ -621,7 +603,21 @@ setup_cron_renew() {
     fi
 }
 
+# ---- 证书续期 cron（仅域名）----
+setup_cron_renew_domain() {
+    info "配置域名证书自动续期 ..."
+    local acme_sh="${HOME}/.acme.sh/acme.sh"
+    if ! (crontab -l 2>/dev/null | grep -q 'acme.sh.*--cron.*${DOMAIN}'); then
+        (crontab -l 2>/dev/null || true; echo "0 3 * * * ${acme_sh} --cron -d ${DOMAIN} > /dev/null 2>&1") | crontab -
+        info "已添加续期 crontab（每日 3:00 检查域名证书）"
+    else
+        info "续期 crontab 已存在"
+    fi
+}
+
+# ---- 启动 Caddy ----
 start_caddy() {
+    local verify_url="${1:-}"
     info "启动 Caddy 服务 ..."
 
     if command -v systemctl &>/dev/null && [[ -f /etc/systemd/system/caddy.service ]]; then
@@ -637,29 +633,34 @@ start_caddy() {
         info "Caddy 已后台启动 (PID: $!)"
     fi
 
-    # 验证
+    if [[ -z "$verify_url" ]]; then
+        if [[ -n "$DOMAIN" ]]; then
+            verify_url="https://${DOMAIN}"
+        else
+            verify_url="https://${PUBLIC_IP}"
+        fi
+    fi
+
     sleep 2
     local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" "https://${PUBLIC_IP}" --insecure --max-time 5 2>/dev/null)
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" "$verify_url" --insecure --max-time 5 2>/dev/null)
     http_code="${http_code%%[[:space:]]*}"
 
     if [[ "$http_code" =~ ^[0-9]{3}$ ]] && [[ "$http_code" != "000" ]]; then
-        info "Caddy 启动成功，HTTPS 根页面响应码: ${http_code}"
+        info "Caddy 启动成功，HTTPS 响应码: ${http_code}"
     else
-        warn "Caddy 已启动但 HTTPS 暂时无响应，请稍后检查: curl -k https://${PUBLIC_IP}"
+        warn "Caddy 已启动但 HTTPS 暂时无响应: curl -k ${verify_url}"
     fi
 }
 
-print_summary() {
+# ---- 输出摘要 ----
+print_summary_ip() {
     echo ""
     echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  Caddy + SSL 多服务部署完成！${NC}"
+    echo -e "${GREEN}  IP 证书模式部署完成！${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
     echo -e "  入口地址:  ${GREEN}https://${PUBLIC_IP}${NC}"
-    if [[ -n "$DOMAIN" ]]; then
-        echo -e "  主站:       ${GREEN}https://${DOMAIN}${NC}"
-    fi
     echo ""
     echo -e "  ${YELLOW}可用服务:${NC}"
     for svc in "${SERVICES_LIST[@]}"; do
@@ -668,68 +669,300 @@ print_summary() {
         echo -e "    https://${PUBLIC_IP}${path}  →  ${h}:${port}"
     done
     echo ""
-    if [[ -n "$DOMAIN" ]]; then
-        echo -e "  ${GREEN}域名证书已配置！${NC}"
-        echo "  证书续期: acme.sh 每日 3:00 自动检查"
-        echo ""
-    fi
     echo "  Caddy 配置:   /etc/caddy/Caddyfile"
     echo "  SSL 证书:     ${CERT_FILE}"
-    echo "  SSL 私钥:     ${KEY_FILE}"
     echo "  访问日志:     /var/log/caddy/access.log"
     echo "  导航页面:     /var/www/html/index.html"
     echo ""
     echo -e "${YELLOW}  重要提示：${NC}"
     echo "  1. 云服务商安全组需放行端口 443 (HTTPS) 和 80 (HTTP)"
-    echo "  2. 原始 http://IP:端口 仍然可以直接访问（旁路）"
     echo ""
     echo -e "${GREEN}  一键测试: curl -k https://${PUBLIC_IP}/couchdb/${NC}"
     echo ""
 }
 
-# ============================================================
-# Main
-# ============================================================
-main() {
+print_summary_domain() {
     echo ""
     echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}  Caddy + SSL 多服务反向代理${NC}"
-    echo -e "${GREEN}  一键部署脚本${NC}"
+    echo -e "${GREEN}  域名证书模式部署完成！${NC}"
     echo -e "${GREEN}========================================${NC}"
     echo ""
+    echo -e "  入口地址:  ${GREEN}https://${DOMAIN}${NC}"
+    echo ""
+    echo -e "  ${YELLOW}可用服务:${NC}"
+    for svc in "${SERVICES_LIST[@]}"; do
+        IFS='|' read -r path h port _ <<< "$svc"
+        [[ -z "$h" ]] && h="127.0.0.1"
+        echo -e "    https://${DOMAIN}${path}  →  ${h}:${port}"
+    done
+    echo ""
+    echo "  Caddy 配置:   /etc/caddy/Caddyfile"
+    echo "  SSL 证书:     ${CERT_FILE}"
+    echo "  访问日志:     /var/log/caddy/access.log"
+    echo "  导航页面:     /var/www/html/index.html"
+    echo ""
+    echo -e "${YELLOW}  重要提示：${NC}"
+    echo "  1. 云服务商安全组需放行端口 443 (HTTPS) 和 80 (HTTP)"
+    echo "  2. 确保域名 ${DOMAIN} 的 DNS A 记录指向本机 IP"
+    echo ""
+    echo -e "${GREEN}  一键测试: curl -k https://${DOMAIN}/couchdb/${NC}"
+    echo ""
+}
 
+# ============================================================
+# 子域名管理
+# ============================================================
+
+# ---- 列出已有子域名 ----
+list_subdomains() {
+    local acme_home="${HOME}/.acme.sh"
+    local found=()
+
+    for dir in "$acme_home"/*"${DOMAIN}"_ecc; do
+        [[ -d "$dir" ]] || continue
+        local name
+        name=$(basename "$dir")
+        name="${name%_ecc}"
+        [[ "$name" == "$DOMAIN" ]] && continue
+        found+=("$name")
+    done
+
+    if [[ ${#found[@]} -eq 0 ]]; then
+        echo "  （暂无子域名证书）"
+        return 0
+    fi
+
+    for name in "${found[@]}"; do
+        local port="?"
+        if [[ -f /etc/caddy/Caddyfile ]]; then
+            port=$(grep -A5 "^${name} " /etc/caddy/Caddyfile 2>/dev/null | grep "reverse_proxy" | grep -oP ':\K\d+' | head -1 || echo "?")
+        fi
+        echo "  ${name}  →  端口 ${port}"
+    done
+}
+
+# ---- 申请子域名证书 ----
+issue_subdomain_cert() {
+    local sub_domain="${1}"
+    local acme_sh="${HOME}/.acme.sh/acme.sh"
+
+    echo ""
+    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}│  子域名证书: ${sub_domain}${NC}"
+    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+
+    local cert_dir="${HOME}/.acme.sh/${sub_domain}_ecc"
+    local cert_file="${cert_dir}/fullchain.cer"
+    local key_file="${cert_dir}/${sub_domain}.key"
+
+    if [[ -f "$cert_file" ]] && [[ -f "$key_file" ]]; then
+        info "证书已存在: ${sub_domain}"
+        echo -e "  ${sub_domain}  ...  ${GREEN}已存在${NC}"
+    else
+        info "申请子域名证书: ${sub_domain}"
+        ${acme_sh} --issue --server letsencrypt -d "${sub_domain}" \
+            --webroot /var/www/html --force 2>/dev/null || {
+            error "子域名证书申请失败: ${sub_domain}"
+            error "请确保 ${sub_domain} 的 DNS A 记录已指向本机"
+            return 1
+        }
+        info "子域名证书申请成功: ${sub_domain}"
+    fi
+
+    ${acme_sh} --install-cert -d "${sub_domain}" \
+        --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
+}
+
+# ---- 添加子域名到 Caddyfile ----
+add_subdomain_to_caddy() {
+    local sub_domain="${1}"
+    local port="${2}"
+    local acme_home="${HOME}/.acme.sh"
+    local caddyfile="/etc/caddy/Caddyfile"
+
+    # 检查是否已存在
+    if grep -q "^${sub_domain} " "$caddyfile" 2>/dev/null; then
+        warn "子域名 ${sub_domain} 已在 Caddyfile 中，跳过添加"
+        return 0
+    fi
+
+    info "添加子域名到 Caddyfile: ${sub_domain} → :${port}"
+    cat >> "$caddyfile" <<ROUTE
+
+# subdomain: ${sub_domain%%.${DOMAIN}} → :${port}
+${sub_domain} {
+    tls ${acme_home}/${sub_domain}_ecc/fullchain.cer ${acme_home}/${sub_domain}_ecc/${sub_domain}.key
+    reverse_proxy 127.0.0.1:${port} {
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-For {remote_host}
+    }
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 50mb
+            roll_keep 3
+        }
+    }
+}
+ROUTE
+    info "已添加 ${sub_domain} → :${port}"
+}
+
+# ============================================================
+# 模式 1: IP 证书
+# ============================================================
+mode_ip() {
     check_root
     parse_services
     detect_os
     install_deps
     detect_ip
     prompt_ip
+    install_acme
+    install_caddy
+
+    start_temp_caddy
+    issue_ip_cert
+    stop_temp_caddy
+
+    gen_root_html "https://${PUBLIC_IP}"
+    configure_caddy_ip
+    setup_cron_renew_ip
+    start_caddy "https://${PUBLIC_IP}"
+    print_summary_ip
+}
+
+# ============================================================
+# 模式 2: 域名证书
+# ============================================================
+mode_domain() {
+    check_root
+    parse_services
+    detect_os
+    install_deps
     prompt_domain
     install_acme
     install_caddy
 
-    # 首次运行：启动临时 Caddy（端口 80）用于证书申请
-    # 后续运行：证书已存在，直接检查续期
     start_temp_caddy
-    issue_cert
-
+    issue_domain_cert
     stop_temp_caddy
 
-    # 域名证书由 Caddy 自动 SSL 管理，仅展示状态
-    if [[ -n "$DOMAIN" ]]; then
-        echo ""
-        echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-        echo -e "${YELLOW}│  域名证书（Caddy 自动 SSL）                          │${NC}"
-        echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
-        info "${DOMAIN} 证书由 Caddy 自动申请和续期，无需 acme.sh 干预"
-        echo ""
+    gen_root_html "https://${DOMAIN}"
+    configure_caddy_domain
+    setup_cron_renew_domain
+    start_caddy "https://${DOMAIN}"
+    print_summary_domain
+}
+
+# ============================================================
+# 模式 3: 子域名管理
+# ============================================================
+mode_subdomain() {
+    check_root
+
+    # 需要先有域名
+    if [[ -z "$DOMAIN" ]]; then
+        prompt_domain
     fi
 
-    gen_root_html
-    configure_caddy
-    setup_cron_renew
-    start_caddy
-    print_summary
+    # 检查 acme.sh
+    if [[ ! -f "${HOME}/.acme.sh/acme.sh" ]]; then
+        install_acme
+    fi
+
+    echo ""
+    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}│  现有子域名证书                                      │${NC}"
+    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+    list_subdomains
+
+    echo ""
+    echo -e "${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+    echo -e "${YELLOW}│  添加新子域名                                      │${NC}"
+    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+    echo -n "  子域名前缀（如: st → ${DOMAIN} 的 st.${DOMAIN}）: "
+    read -r SUB_PREFIX </dev/tty 2>/dev/null || true
+    SUB_PREFIX="$(printf '%s' "$SUB_PREFIX" | LC_ALL=C tr -cd 'a-zA-Z0-9-')"
+
+    if [[ -z "$SUB_PREFIX" ]]; then
+        error "子域名前缀不能为空"
+        return 1
+    fi
+
+    echo -n "  后端端口（如: 8000）: "
+    read -r SUB_PORT </dev/tty 2>/dev/null || true
+    SUB_PORT="$(printf '%s' "$SUB_PORT" | LC_ALL=C tr -cd '0-9')"
+
+    if [[ -z "$SUB_PORT" ]]; then
+        error "端口不能为空"
+        return 1
+    fi
+
+    local sub_domain="${SUB_PREFIX}.${DOMAIN}"
+    echo ""
+    info "即将添加: ${sub_domain} → :${SUB_PORT}"
+
+    # 确保临时 Caddy 在运行（子域名申请也需要验证）
+    start_temp_caddy
+    issue_subdomain_cert "$sub_domain"
+    stop_temp_caddy
+
+    if [[ -f /etc/caddy/Caddyfile ]]; then
+        add_subdomain_to_caddy "$sub_domain" "$SUB_PORT"
+
+        # 重载 Caddy
+        info "重载 Caddy..."
+        if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null 2>&1; then
+            systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
+        else
+            caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true
+        fi
+        info "子域名添加完成！https://${sub_domain}/"
+    else
+        warn "未找到 Caddyfile，请先运行模式 2 设置域名"
+    fi
+}
+
+# ============================================================
+# 菜单
+# ============================================================
+show_menu() {
+    echo ""
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}  Caddy + SSL 多服务反向代理${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo ""
+    echo "  请选择运行模式:"
+    echo ""
+    echo "  ${GREEN}1${NC}  IP 证书模式"
+    echo "     为公网 IP 申请 SSL 证书，生成仅含 IP 的配置"
+    echo ""
+    echo "  ${GREEN}2${NC}  域名证书模式"
+    echo "     为域名申请 SSL 证书，生成仅含域名的配置"
+    echo ""
+    echo "  ${GREEN}3${NC}  子域名管理"
+    echo "     查看已有子域名证书，添加新的子域名"
+    echo ""
+    echo "  ${GREEN}q${NC}  退出"
+    echo ""
+    echo -n "  请输入 [1/2/3/q]: "
+}
+
+# ============================================================
+# Main
+# ============================================================
+main() {
+    show_menu
+    read -r CHOICE </dev/tty 2>/dev/null || true
+    echo ""
+
+    case "$CHOICE" in
+        1) mode_ip ;;
+        2) mode_domain ;;
+        3) mode_subdomain ;;
+        q|Q) info "已退出" ; exit 0 ;;
+        *) error "无效选项，请输入 1、2、3 或 q" ; exit 1 ;;
+    esac
 }
 
 main "$@"
