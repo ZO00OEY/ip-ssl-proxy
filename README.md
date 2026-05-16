@@ -25,47 +25,63 @@
 - 你现有的服务**不需要做任何修改**，继续在原端口运行
 - `http://IP:原端口` 依然可以直接访问，不受影响
 
-## 快速开始
-
-### 前提条件
+## 前提条件
 
 - Linux 云服务器（Debian/Ubuntu/CentOS 等）
 - 有**固定公网 IP**
 - 云服务商安全组已**放行 80 和 443 端口**
 - 你的各个后端服务已经在对应端口运行
 
-### 一键安装
+---
 
-在云服务器终端执行：
+## 第一部分：首次安装
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh | bash
-```
-
-或者分两步下载再运行：
+**git clone 下载脚本 → 运行**
 
 ```bash
-curl -fsSL -o setup.sh https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh && bash setup.sh
+cd ~
+git clone https://github.com/ZO00OEY/ip-ssl-proxy.git
+cd ip-ssl-proxy && bash setup.sh
 ```
 
-然后**什么都不用做**，脚本全自动跑完。整个过程通常 1-3 分钟。
+脚本会全自动完成：安装依赖 → 申请 IP 证书 → 安装 Caddy → 配置反向代理 → 设置开机自启和证书续期。
 
-### 验证
+整个过程通常 1-3 分钟。
 
-部署完成后，浏览器访问 `https://你的公网IP` 能看到服务列表页。
+---
 
-或者用 curl 测试：
+## 第二部分：安装中断后的恢复
+
+如果上次运行被 `Ctrl+C` 中断，或者脚本中途报错退出，apt 的锁可能没释放，再次运行会卡住。
+
+**清理残留锁文件 → 更新脚本 → 重新运行**
+
+```bash
+rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock
+dpkg --configure -a
+cd ~/ip-ssl-proxy && git pull && bash setup.sh
+```
+
+- 前三行：删掉上次中断残留的 apt 锁，释放 dpkg，让包管理器恢复正常
+- `git pull`：拉取脚本最新版本
+- `bash setup.sh`：重新运行
+
+---
+
+## 验证部署
+
+浏览器访问 `https://你的公网IP` 能看到服务列表页。
+
+或用 curl 测试：
 
 ```bash
 curl -k https://你的公网IP/couchdb/
 curl -k https://你的公网IP/tavern/
 ```
 
-> `-k` 是因为 IP 证书是自签名链，第一次访问会提示不安全，这是正常的。
+> `-k` 是因为 IP 证书不是域名证书，第一次访问浏览器会提示不安全，但通信本身是加密的。
 
 ## 默认服务路由
-
-安装后自动配置以下路径转发：
 
 | 路径 | 目标地址 | 说明 |
 |---|---|---|
@@ -77,61 +93,31 @@ curl -k https://你的公网IP/tavern/
 
 ## 自定义服务
 
-如果你的服务列表不一样，通过环境变量覆盖：
+通过环境变量 `SERVICES` 覆盖默认列表，格式：`"路径|后端IP(可选)|端口"`，多个用逗号分隔。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ZO00OEY/ip-ssl-proxy/main/setup.sh | SERVICES="/app1/|3000,/app2/|4000" bash
-```
-
-格式：`"路径|后端IP(可选)|端口"`，多个用逗号分隔，主机 IP 省略则默认为 `127.0.0.1`。
-
-更多例子：
-
-```bash
-# 省略主机 IP（默认 127.0.0.1）
-SERVICES="/ui/|8080,/api/|9000" bash setup.sh
-
-# 指定不同主机
-SERVICES="/svc1/|192.168.1.10|3000,/svc2/|4000" bash setup.sh
+cd ~/ip-ssl-proxy
+SERVICES="/app1/|3000,/app2/|192.168.1.10|4000" bash setup.sh
 ```
 
 ## 日常管理
 
-### 查看 Caddy 状态
+| 操作 | 命令 |
+|---|---|
+| 查看 Caddy 状态 | `systemctl status caddy` |
+| 修改配置后重载 | `systemctl reload caddy` |
+| 查看访问日志 | `tail -f /var/log/caddy/access.log` |
+| 手动续期证书 | `~/.acme.sh/acme.sh --cron` |
 
-```bash
-systemctl status caddy
-```
-
-### 重新加载配置
-
-修改 `/etc/caddy/Caddyfile` 后：
-
-```bash
-systemctl reload caddy
-```
-
-### 查看访问日志
-
-```bash
-tail -f /var/log/caddy/access.log
-```
-
-### 证书续期
-
-证书每天凌晨 3 点自动检查续期，无需手动干预。如需手动触发：
-
-```bash
-~/.acme.sh/acme.sh --cron
-```
+证书每天凌晨 3 点自动检查续期，无需手动干预。
 
 ## 注意事项
 
-1. **SSL 证书警告**：浏览器访问 IP 证书时可能会显示"不安全"，因为 IP 证书不属于公开信任的证书体系（但**通信本身是加密的**）。如果需要消除这个提示，建议使用域名。
-2. **SillyTavern**：如果页面资源加载异常，需要在 SillyTavern 的 `config.yaml` 中设置 `enableProxy: true`。
-3. **无法访问？** 检查云服务商安全组是否放行了 80 和 443 端口入站规则。
-4. **HTTP 跳转**：访问 `http://IP` 会自动 301 跳转到 `https://IP`，这是 Caddy 的标准行为。
-5. **原始端口仍可直达**：`http://IP:5984`、`http://IP:8000` 等依然可以直接访问，Caddy 不干扰现有服务。
+1. **SSL 证书警告**：浏览器访问 IP 证书时显示"不安全"是正常的，因为 IP 证书不属于公开信任体系。通信本身是加密的。
+2. **SillyTavern**：如果页面资源加载异常，需要在 `config.yaml` 中设置 `enableProxy: true`。
+3. **无法访问？** 检查云服务商安全组是否放行了 80 和 443 端口。
+4. **HTTP 跳转**：访问 `http://IP` 会自动 301 跳转到 `https://IP`。
+5. **原始端口仍可直达**：`http://IP:5984`、`http://IP:8000` 等不受 Caddy 影响。
 
 ## 文件位置
 
