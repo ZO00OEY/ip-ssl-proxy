@@ -9,7 +9,8 @@
 ## 快速开始
 
 ```bash
-cd ~ && git clone https://github.com/ZO00OEY/ip-ssl-proxy.git && cd ip-ssl-proxy && bash setup.sh
+git clone https://github.com/ZO00OEY/ip-ssl-proxy.git
+cd ip-ssl-proxy && bash setup.sh
 ```
 
 首次运行弹出菜单：
