@@ -131,8 +131,8 @@ SERVICES="/app1/|3000,/app2/|192.168.1.10|4000" bash setup.sh
 ## 注意事项
 
 1. **IP 证书安全警告** — 浏览器会提示"不安全"，这是 Let's Encrypt IP 证书的机制，通信本身是加密的
-2. **SillyTavern 子路径** — `https://IP/st/` 下 CSS 可能错乱，需在 `config.yaml` 中设置 `enableProxy: true`，或改用子域名
+2. **SillyTavern 子路径** — `https://IP/st/` 下 CSS 会错乱，需改用子域名
 3. **端口放行** — 云服务商安全组需放行 80 和 443 端口
-4. **HTTP → HTTPS 跳转** — 访问 `http://IP/xxx` 会自动 308 跳转到 `https://IP/xxx`
+4. **HTTP → HTTPS 跳转** — 访问 `http://IP/xxx` 会自动跳转到 `https://IP/xxx`
 5. **原始端口直达** — `http://IP:原端口` 不受 Caddy 影响，可旁路访问
-6. **架构支持** — 自动检测 x86_64 / arm64 / armv7
+6. **架构支持** — 自动检测 x86_64 / arm64 
