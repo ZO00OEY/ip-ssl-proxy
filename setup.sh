@@ -429,8 +429,10 @@ CADDYEOF
         echo "${tls_line}" >> "$caddyfile"
     fi
 
+    load_removed_services
     for svc in "${SERVICES_LIST[@]}"; do
         IFS='|' read -r path host port _ <<< "$svc"
+        is_service_removed "$path" && continue
         [[ -z "$host" ]] && host="127.0.0.1"
         local strip_path="${path%/}"
         cat >> "$caddyfile" <<ROUTE
@@ -446,7 +448,7 @@ ROUTE
     done
 
     # 只在有自定义路由文件时才加 import（空 glob 会导致 Caddy 报错）
-    mkdir -p /etc/caddy/routes-custom.d
+    mkdir -p /etc/caddy/routes-custom.d /etc/caddy/subdomains.d
     if ls /etc/caddy/routes-custom.d/*.conf &>/dev/null 2>&1; then
         echo "    import /etc/caddy/routes-custom.d/*.conf" >> "$caddyfile"
     fi
@@ -462,7 +464,13 @@ ROUTE
         }
     }
 }
+
 ROUTE
+    # 子域名（完整 site block，必须放在主 site block 之外）
+    if ls /etc/caddy/subdomains.d/*.conf &>/dev/null 2>&1; then
+        echo "# 子域名（自动引入）" >> "$caddyfile"
+        echo "import /etc/caddy/subdomains.d/*.conf" >> "$caddyfile"
+    fi
     info "Caddy 配置已生成，共 ${#SERVICES_LIST[@]} 个服务路由"
     caddy fmt --overwrite "$caddyfile" 2>/dev/null || true
 }
@@ -643,14 +651,17 @@ add_custom_routes() {
             base_services=("${DEFAULT_SERVICES[@]}")
         fi
 
-        # 预配置服务（不可删除）
+        load_removed_services
+
+        # 预配置服务（未删除的默认服务）
         for svc in "${base_services[@]}"; do
             IFS='|' read -r p h port _ <<< "$svc"
             [[ -z "$h" ]] && h="127.0.0.1"
             local _name="${p//\//}"
             [[ -z "$_name" ]] && continue
+            is_service_removed "$p" && continue
             list_items+=("${p} → ${h}:${port}")
-            delete_names+=("")
+            delete_names+=("$p")
         done
 
         # 自定义服务（可删除）
@@ -716,15 +727,26 @@ ROUTE
                 error "无效序号"
                 continue
             fi
-            if [[ -z "${delete_names[$idx]}" ]]; then
-                error "默认服务不能删除"
-                continue
+            local del_val="${delete_names[$idx]}"
+            if [[ "$del_val" == /*/ ]]; then
+                # 默认服务 — 标记为已删除并从 Caddyfile 移除
+                echo "$del_val" >> /etc/caddy/.services-removed.conf
+                REMOVED_SERVICES+=("$del_val")
+                local strip_path="${del_val%/}"
+                local escaped_path
+                escaped_path=$(printf '%s\n' "$strip_path" | sed 's/[\/&]/\\&/g')
+                sed -i "/^    # ${escaped_path} →/,/^    }/d" /etc/caddy/Caddyfile
+                info "已删除默认服务: ${strip_path}"
+                caddy fmt --overwrite /etc/caddy/Caddyfile 2>/dev/null || true
+                rebuild_nav_ip
+                reload_caddy
+            else
+                # 自定义服务 — 删除配置文件
+                rm "${custom_dir}/${del_val}.conf"
+                info "已删除: /${del_val}/"
+                rebuild_nav_ip
+                reload_caddy
             fi
-            local del_name="${delete_names[$idx]}"
-            rm "${custom_dir}/${del_name}.conf"
-            info "已删除: /${del_name}/"
-            rebuild_nav_ip
-            reload_caddy
             continue
         fi
 
@@ -740,6 +762,7 @@ rebuild_nav_ip() {
     local html="/var/www/html/index.html"
     mkdir -p /var/www/html
 
+    load_removed_services
     local -a all_services=()
     if [[ -f /etc/caddy/.services.conf ]]; then
         mapfile -t all_services < /etc/caddy/.services.conf
@@ -747,6 +770,14 @@ rebuild_nav_ip() {
         all_services=("${DEFAULT_SERVICES[@]}")
     fi
     local name port
+    # 过滤已删除的默认服务
+    local -a filtered=()
+    for svc in "${all_services[@]}"; do
+        IFS='|' read -r p _ _ _ <<< "$svc"
+        is_service_removed "$p" && continue
+        filtered+=("$svc")
+    done
+    all_services=("${filtered[@]}")
     for f in "$custom_dir"/*.conf; do
         [[ -f "$f" ]] || continue
         name=$(basename "$f" .conf)
@@ -777,10 +808,12 @@ add_custom_subdomains() {
     fi
     DOMAIN="$domain"
 
-    # 确保 Caddyfile 有 import 子域名目录（插入到 handle / 之前）
+    # 确保 Caddyfile 有 import 子域名目录（追加到文件末尾，必须在 site block 之外）
     if ! grep -q "subdomains.d" "$caddyfile" 2>/dev/null; then
         info "Caddyfile 缺少子域名引用，自动添加..."
-        sed -i '/^    handle \/ {/i\    import /etc/caddy/subdomains.d/*.conf' "$caddyfile"
+        echo "" >> "$caddyfile"
+        echo "# 子域名（自动引入）" >> "$caddyfile"
+        echo "import /etc/caddy/subdomains.d/*.conf" >> "$caddyfile"
     fi
 
     echo ""
@@ -805,14 +838,17 @@ add_custom_subdomains() {
             done
         fi
 
-        # 预配置服务（不可删除）
+        load_removed_services
+
+        # 预配置服务（未删除的默认服务）
         for svc in "${base_services[@]}"; do
             IFS='|' read -r p h port _ <<< "$svc"
             [[ -z "$h" ]] && h="127.0.0.1"
             local _name="${p//\//}"
             [[ -z "$_name" ]] && continue
+            is_service_removed "$p" && continue
             list_items+=("https://${DOMAIN}${p} → ${h}:${port}")
-            delete_names+=("")
+            delete_names+=("$p")
         done
 
         # 自定义子域名（可删除）
@@ -885,15 +921,25 @@ ROUTE
                 error "无效序号"
                 continue
             fi
-            if [[ -z "${delete_names[$idx]}" ]]; then
-                error "默认服务不能删除"
-                continue
+            local del_val="${delete_names[$idx]}"
+            if [[ "$del_val" == /*/ ]]; then
+                # 默认服务 — 标记为已删除并从 Caddyfile 移除
+                echo "$del_val" >> /etc/caddy/.services-removed.conf
+                REMOVED_SERVICES+=("$del_val")
+                local strip_path="${del_val%/}"
+                local escaped_path
+                escaped_path=$(printf '%s\n' "$strip_path" | sed 's/[\/&]/\\&/g')
+                sed -i "/^    # ${escaped_path} →/,/^    }/d" /etc/caddy/Caddyfile
+                info "已删除默认服务: ${strip_path}"
+                caddy fmt --overwrite /etc/caddy/Caddyfile 2>/dev/null || true
+                rebuild_nav_domain "$domain"
+                reload_caddy
+            else
+                rm "${sub_dir}/${del_val}.conf"
+                info "已删除: ${del_val}.${DOMAIN}"
+                rebuild_nav_domain "$domain"
+                reload_caddy
             fi
-            local del_name="${delete_names[$idx]}"
-            rm "${sub_dir}/${del_name}.conf"
-            info "已删除: ${del_name}.${DOMAIN}"
-            rebuild_nav_domain "$domain"
-            reload_caddy
             continue
         fi
 
@@ -915,6 +961,7 @@ rebuild_nav_domain() {
     local -a all_services=()
     local name port
 
+    load_removed_services
     if [[ -f /etc/caddy/.services.conf ]]; then
         mapfile -t all_services < /etc/caddy/.services.conf
     else
@@ -922,6 +969,15 @@ rebuild_nav_domain() {
             all_services+=("$svc")
         done
     fi
+
+    # 过滤已删除的默认服务
+    local -a filtered=()
+    for svc in "${all_services[@]}"; do
+        IFS='|' read -r p _ _ _ <<< "$svc"
+        is_service_removed "$p" && continue
+        filtered+=("$svc")
+    done
+    all_services=("${filtered[@]}")
 
     for f in "$sub_dir"/*.conf; do
         [[ -f "$f" ]] || continue
@@ -1083,6 +1139,22 @@ reload_caddy() {
         fi
     fi
     $ok && info "完成！" || error "Caddy 启动失败，请手动检查"
+}
+
+# ---- 已删除默认服务管理 ----
+load_removed_services() {
+    REMOVED_SERVICES=()
+    if [[ -f /etc/caddy/.services-removed.conf ]]; then
+        mapfile -t REMOVED_SERVICES < /etc/caddy/.services-removed.conf
+    fi
+}
+
+is_service_removed() {
+    local path="$1"
+    for r in "${REMOVED_SERVICES[@]}"; do
+        [[ "$r" == "$path" ]] && return 0
+    done
+    return 1
 }
 
 # ============================================================
