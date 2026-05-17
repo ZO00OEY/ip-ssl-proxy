@@ -387,7 +387,7 @@ configure_caddy() {
 
     local site_addr tls_line section_title mode_label
     if [[ "$mode" == "ip" ]]; then
-        site_addr="${PUBLIC_IP}:443"
+        site_addr=":443"
         tls_line="    tls ${CERT_FILE} ${KEY_FILE}"
         section_title="IP 证书反代"
         mode_label="IP"
@@ -417,8 +417,7 @@ CADDYEOF
         file_server
     }
     handle {
-        root * /var/www/html
-        file_server
+        redir https://{host}{uri} permanent
     }
 }
 
