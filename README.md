@@ -1,6 +1,6 @@
 # Caddy + SSL 多服务反向代理
 
-给云服务器一键部署 HTTPS 反向代理，用子路径或子域名将流量分发到多个本地服务。
+给云服务器一键部署 HTTPS 反向代理，用子路径将流量分发到多个本地服务。
 
 无需 ICP 备案即可用 IP 证书加密通信；有域名时可切换 Caddy 自动签发证书模式。
 
@@ -9,17 +9,10 @@
 ## 快速开始
 
 ```bash
-cd ~
-git clone https://github.com/ZO00OEY/ip-ssl-proxy.git
-cd ip-ssl-proxy && bash setup.sh
+cd ~ && git clone https://github.com/ZO00OEY/ip-ssl-proxy.git && cd ip-ssl-proxy && bash setup.sh
 ```
 
 首次运行弹出菜单：
-
-**更新脚本：**
-```bash
-cd ~/ip-ssl-proxy && git pull && bash setup.sh
-```
 
 ```
 ========================================
@@ -37,9 +30,14 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
   请输入 [1/2/3/0]:
 ```
 
-选择后自动完成：安装依赖 → 申请证书 → 配置 Caddy → 生成导航页。
+选 1 自动完成所有步骤：安装依赖 → 申请证书 → 配置 Caddy → 生成导航页。
 
-运行完后**自动回到菜单**，可以继续选 3 添加自定义服务，或选 0 退出。
+运行完后自动回到菜单，可以继续选 3 添加自定义服务，或选 0 退出。
+
+**更新脚本：**
+```bash
+cd ~/ip-ssl-proxy && git pull && bash setup.sh
+```
 
 ---
 
@@ -49,7 +47,7 @@ cd ~/ip-ssl-proxy && git pull && bash setup.sh
 
 为公网 IP 申请 Let's Encrypt 证书，所有服务通过 `https://IP/路径/` 访问。
 
-适用 Obsidian Livesync、Mihomo 面板等支持子路径配置的应用。
+已内置的默认服务：
 
 ```
 https://IP/couchdb/   →  CouchDB (5984)
@@ -59,20 +57,25 @@ https://IP/reader/    →  阅读 (4396)
 https://IP/hermes/    →  Hermes Agent (9119)
 ```
 
+适用场景：没有域名或不想备案，但仍需 HTTPS 加密通信的服务。
+
 ### 模式 2：域名证书（需要域名）
 
 Caddy 自动为域名签发和续期 SSL 证书，服务通过 `https://域名/路径/` 访问。
 
-适合有域名的服务器，浏览器显示安全锁。
+适合有域名的服务器，浏览器不提示安全警告。
 
-### 模式 3：添加/删除服务（自动匹配当前配置）
+### 模式 3：添加/删除服务
 
 自动检测当前 Caddyfile 是 IP 模式还是域名模式，对应添加子路径或子域名。
 
-- **IP 模式** → 添加子路径：输入名称和端口，生成 `https://IP/名称/`
-- **域名模式** → 添加子域名：输入前缀和端口，生成 `https://前缀.域名/`
+进入后看到编号列表，操作方式：
 
-输入 `!名称` 可删除已有服务。
+- **回车** → 逐步输入服务名称和端口，添加新服务
+- **输入序号** → 删除对应的自定义服务（默认服务不可删除）
+- **输入 0** → 返回菜单
+
+操作后自动更新导航页和 Caddy 配置，即时生效。
 
 ---
 
@@ -95,7 +98,7 @@ SERVICES="/app1/|3000,/app2/|192.168.1.10|4000" bash setup.sh
 
 格式：`"路径|后端IP(可选)|端口|子域名前缀(可选)"`，逗号分隔。
 
-后期可通过模式 3 交互式增删。
+之后也可以通过模式 3 交互式增删。
 
 ---
 
@@ -127,9 +130,9 @@ SERVICES="/app1/|3000,/app2/|192.168.1.10|4000" bash setup.sh
 
 ## 注意事项
 
-1. **IP 证书安全警告** — 浏览器会提示"不安全"，这是 Let's Encrypt IP 证书的特性，通信本身加密
+1. **IP 证书安全警告** — 浏览器会提示"不安全"，这是 Let's Encrypt IP 证书的机制，通信本身是加密的
 2. **SillyTavern 子路径** — `https://IP/st/` 下 CSS 可能错乱，需在 `config.yaml` 中设置 `enableProxy: true`，或改用子域名
 3. **端口放行** — 云服务商安全组需放行 80 和 443 端口
-4. **HTTP → HTTPS** — 80 端口仅用于 ACME 验证和静态文件服务，不自动跳转
-5. **原始端口直达** — `http://IP:原端口` 不受 Caddy 影响
+4. **HTTP → HTTPS 跳转** — 访问 `http://IP/xxx` 会自动 308 跳转到 `https://IP/xxx`
+5. **原始端口直达** — `http://IP:原端口` 不受 Caddy 影响，可旁路访问
 6. **架构支持** — 自动检测 x86_64 / arm64 / armv7
