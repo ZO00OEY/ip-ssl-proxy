@@ -1005,7 +1005,7 @@ rebuild_nav_domain() {
                 name="SillyTavern"
                 extra_links=" <span style=\"color:#f87171;font-size:0.75rem;\">（CSS 错乱）</span><br><a href=\"http://${PUBLIC_IP}:${port}/\" class=\"link\" target=\"_blank\">http://${PUBLIC_IP}:${port}/</a> <span style=\"color:#10b981;font-size:0.75rem;\">（CSS 正常）</span>"
             elif [[ "$name" == "couchdb" ]]; then
-                extra_links="<br><span style=\"color:#94a3b8;font-size:0.75rem;\">控制台: </span><a href=\"${base_url}couchdb/_utils/\" class=\"link\" target=\"_blank\">${base_url}couchdb/_utils/</a>"
+                extra_links="<br><span style=\"color:#94a3b8;font-size:0.75rem;\">控制台: </span><a href=\"${base_url}/couchdb/_utils/\" class=\"link\" target=\"_blank\">${base_url}/couchdb/_utils/</a>"
             fi
         fi
 
@@ -1046,7 +1046,7 @@ write_nav_html() {
                 name="SillyTavern"
                 extra_links=" <span style=\"color:#f87171;font-size:0.75rem;\">（CSS 错乱）</span><br><a href=\"http://${PUBLIC_IP}:${port}/\" class=\"link\" target=\"_blank\">http://${PUBLIC_IP}:${port}/</a> <span style=\"color:#10b981;font-size:0.75rem;\">（CSS 正常）</span>"
             elif [[ "$name" == "couchdb" ]]; then
-                extra_links="<br><span style=\"color:#94a3b8;font-size:0.75rem;\">控制台: </span><a href=\"${base}couchdb/_utils/\" class=\"link\" target=\"_blank\">${base}couchdb/_utils/</a>"
+                extra_links="<br><span style=\"color:#94a3b8;font-size:0.75rem;\">控制台: </span><a href=\"${base}/couchdb/_utils/\" class=\"link\" target=\"_blank\">${base}/couchdb/_utils/</a>"
             fi
             cards_content+="        <div class=\"card\">
           <div class=\"card-title\">${name}${note}</div>
@@ -1222,6 +1222,35 @@ mode_domain() {
 }
 
 # ============================================================
+# 模式 4: 重新生成导航页
+# ============================================================
+mode_regenerate_nav() {
+    local caddyfile="/etc/caddy/Caddyfile"
+    if [[ ! -f "$caddyfile" ]]; then
+        error "未找到 Caddyfile，请先运行模式 1 或 2"
+        return 1
+    fi
+
+    parse_services
+    local base_url
+    local domain=$(grep -oP '^# 域名: \K.*' "$caddyfile" 2>/dev/null | head -1)
+    if [[ -n "$domain" ]]; then
+        base_url="https://${domain}"
+    else
+        local ip=$(grep -oP '^# 公网 IP: \K.*' "$caddyfile" 2>/dev/null | head -1)
+        if [[ -n "$ip" ]]; then
+            base_url="https://${ip}"
+        else
+            detect_ip
+            base_url="https://${PUBLIC_IP}"
+        fi
+    fi
+
+    gen_root_html "$base_url"
+    info "导航页已重新生成: ${base_url}"
+}
+
+# ============================================================
 # 菜单
 # ============================================================
 show_menu() {
@@ -1235,10 +1264,11 @@ show_menu() {
     echo "  1  拉取IP证书  [二选一]"
     echo "  2  拉取域名证书  [二选一]"
     echo "  3  添加服务（自动匹配当前配置）"
+    echo "  4  重新生成导航页"
     echo "  0  退出"
     echo ""
     echo "----------------------------------------"
-    echo -n "  请输入 [1/2/3/0]: "
+    echo -n "  请输入 [1/2/3/4/0]: "
 }
 
 # ============================================================
@@ -1254,8 +1284,9 @@ main() {
             1) mode_ip ;;
             2) mode_domain ;;
             3) mode_paired ;;
+            4) mode_regenerate_nav ;;
             q|Q|0) info "已退出" ; exit 0 ;;
-            *) error "无效选项，请输入 1、2、3 或 0" ;;
+            *) error "无效选项，请输入 1、2、3、4 或 0" ;;
         esac
     done
 }
