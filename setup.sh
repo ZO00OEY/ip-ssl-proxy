@@ -1231,6 +1231,7 @@ mode_regenerate_nav() {
         return 1
     fi
 
+    detect_ip 2>/dev/null || true
     parse_services
     local base_url
     local domain=$(grep -oP '^# 域名: \K.*' "$caddyfile" 2>/dev/null | head -1)
