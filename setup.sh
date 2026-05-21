@@ -1003,7 +1003,7 @@ rebuild_nav_domain() {
             url="${base_url}${p}"
             if [[ "$name" == "st" ]]; then
                 name="SillyTavern"
-                extra_links=" <span style=\"color:#f87171;font-size:0.75rem;\">（CSS 错乱）</span><br><a href=\"http://${PUBLIC_IP:-${base_url#https://}}:${port}/\" class=\"link\" target=\"_blank\">http://${PUBLIC_IP:-${base_url#https://}}:${port}/</a> <span style=\"color:#10b981;font-size:0.75rem;\">（CSS 正常）</span>"
+                extra_links=" <span style=\"color:#f87171;font-size:0.75rem;\">（CSS 错乱）</span><br><a href=\"http://${base_url#https://}:${port}/\" class=\"link\" target=\"_blank\">http://${base_url#https://}:${port}/</a> <span style=\"color:#10b981;font-size:0.75rem;\">（CSS 正常）</span>"
             elif [[ "$name" == "couchdb" ]]; then
                 extra_links="<br><span style=\"color:#94a3b8;font-size:0.75rem;\">控制台: </span><a href=\"${base_url}/couchdb/_utils/\" class=\"link\" target=\"_blank\">${base_url}/couchdb/_utils/</a>"
             fi
@@ -1023,7 +1023,7 @@ rebuild_nav_domain() {
 write_nav_html() {
     local file="$1"
     local base="$2"
-    local raw_host="${PUBLIC_IP:-${base#https://}}"
+    local raw_host="${base#https://}"
     shift 2
     local cards_content=""
     local raw_mode=false
