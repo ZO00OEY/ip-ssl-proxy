@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -euo pipefail 2>/dev/null || set -eu
 
 # ============================================================
 # Caddy + SSL 多服务反向代理一键部署脚本
@@ -139,7 +139,7 @@ install_deps() {
     local pkgs="curl openssl"
     case "${OS_ID}" in
         ubuntu|debian)
-            apt-get update -qq
+            apt-get update -qq || true
             apt-get install -y -qq $pkgs
             ;;
         centos|rhel|rocky|almalinux|fedora)
@@ -154,7 +154,7 @@ install_deps() {
             ;;
         *)
             if command -v apt-get &>/dev/null; then
-                apt-get update -qq && apt-get install -y -qq $pkgs
+                apt-get update -qq || true && apt-get install -y -qq $pkgs
             elif command -v yum &>/dev/null; then
                 yum install -y $pkgs
             else
@@ -187,9 +187,9 @@ install_acme() {
     fi
 
     if [[ -f "${HOME}/.acme.sh/acme.sh.env" ]]; then
-        set +euo pipefail
+        set +euo pipefail 2>/dev/null || set +eu
         . "${HOME}/.acme.sh/acme.sh.env"
-        set -euo pipefail
+        set -euo pipefail 2>/dev/null || set -eu
     fi
     info "acme.sh 安装完成"
 }
@@ -211,7 +211,7 @@ install_caddy() {
                 gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null || true
             curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' 2>/dev/null | \
                 tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null || true
-            apt-get update -qq && apt-get install -y -qq caddy && installed=1 || true
+            apt-get update -qq || true && apt-get install -y -qq caddy && installed=1 || true
             ;;
         centos|rhel|rocky|almalinux|fedora)
             info "通过 dnf/yum 安装 Caddy ..."
