@@ -375,7 +375,8 @@ gen_root_html() {
         fi
     fi
     mkdir -p /var/www/html
-    write_nav_html "/var/www/html/index.html" "$base_url" "${SERVICES_LIST[@]}"
+    collect_all_services
+    write_nav_html "/var/www/html/index.html" "$base_url" "${ALL_SERVICES[@]}"
 }
 
 # ---- 生成 Caddy 配置（mode: ip|domain）----
@@ -756,36 +757,42 @@ ROUTE
     [[ "$changed" == "true" ]] && { rebuild_nav_ip; reload_caddy; }
 }
 
-rebuild_nav_ip() {
+# ---- 收集完整服务列表（默认+自定义-已删除）----
+collect_all_services() {
     local custom_dir="/etc/caddy/routes-custom.d"
-    local base_url="https://${PUBLIC_IP}"
-    local html="/var/www/html/index.html"
-    mkdir -p /var/www/html
-
     load_removed_services
-    local -a all_services=()
+
     if [[ -f /etc/caddy/.services.conf ]]; then
-        mapfile -t all_services < /etc/caddy/.services.conf
+        mapfile -t ALL_SERVICES < /etc/caddy/.services.conf
     else
-        all_services=("${DEFAULT_SERVICES[@]}")
+        ALL_SERVICES=("${DEFAULT_SERVICES[@]}")
     fi
-    local name port
+
     # 过滤已删除的默认服务
     local -a filtered=()
-    for svc in "${all_services[@]}"; do
+    for svc in "${ALL_SERVICES[@]}"; do
         IFS='|' read -r p _ _ _ <<< "$svc"
         is_service_removed "$p" && continue
         filtered+=("$svc")
     done
-    all_services=("${filtered[@]}")
-    for f in "$custom_dir"/*.conf; do
+    ALL_SERVICES=("${filtered[@]}")
+
+    # 添加自定义服务（IP 模式路由 + 域名模式子域名）
+    local name port
+    for f in /etc/caddy/routes-custom.d/*.conf /etc/caddy/subdomains.d/*.conf; do
         [[ -f "$f" ]] || continue
         name=$(basename "$f" .conf)
         port=$(grep -oP ':\K\d+' "$f" 2>/dev/null | head -1 || true)
-        [[ -n "$port" ]] && all_services+=("/${name}/|127.0.0.1|${port}|")
+        [[ -n "$port" ]] && ALL_SERVICES+=("/${name}/|127.0.0.1|${port}|")
     done
+}
 
-    write_nav_html "$html" "$base_url" "${all_services[@]}"
+rebuild_nav_ip() {
+    local html="/var/www/html/index.html"
+    local base_url="https://${PUBLIC_IP}"
+    mkdir -p /var/www/html
+    collect_all_services
+    write_nav_html "$html" "$base_url" "${ALL_SERVICES[@]}"
     info "导航页已更新"
 }
 
