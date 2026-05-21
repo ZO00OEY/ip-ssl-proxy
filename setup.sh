@@ -1037,14 +1037,16 @@ write_nav_html() {
             IFS='|' read -r p h port _ <<< "$svc"
             local name="${p//\//}"
             [[ -z "$name" ]] && continue
-            local note=""
-            if [[ "$port" == "8000" ]]; then
+            local extra_links=""
+            if [[ "$name" == "sillytavern" ]]; then
                 name="SillyTavern"
-                note=" <span style=\"color:#f87171;font-size:0.75rem;\">（通过本方式使用酒馆会CSS错乱）</span>"
+                extra_links="<br><span style=\"color:#94a3b8;font-size:0.75rem;\">直接访问: </span><a href=\"http://${PUBLIC_IP}:${port}/\" class=\"link sub\" target=\"_blank\">http://${PUBLIC_IP}:${port}/</a> <span style=\"color:#f87171;font-size:0.75rem;\">（CSS 正常）</span>"
+            elif [[ "$name" == "couchdb" ]]; then
+                extra_links="<br><span style=\"color:#94a3b8;font-size:0.75rem;\">控制台: </span><a href=\"${base}/couchdb/_utils/\" class=\"link sub\" target=\"_blank\">${base}/couchdb/_utils/</a>"
             fi
             cards_content+="        <div class=\"card\">
           <div class=\"card-title\">${name}${note}</div>
-          <div class=\"card-links\"><a href=\"${base}${p}\" class=\"link\">${base}${p}</a></div>
+          <div class=\"card-links\"><a href=\"${base}${p}\" class=\"link\">${base}${p}</a>${extra_links}</div>
         </div>
 "
         done
