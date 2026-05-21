@@ -1003,8 +1003,7 @@ rebuild_nav_domain() {
             url="${base_url}${p}"
             if [[ "$name" == "st" ]]; then
                 name="SillyTavern"
-                note=" <span style=\"color:#f87171;font-size:0.75rem;\">（HTTPS 代理下 CSS 错乱）</span>"
-                extra_links="<br><span style=\"color:#94a3b8;font-size:0.75rem;\">直连: </span><a href=\"http://${PUBLIC_IP}:${port}/\" class=\"link\" target=\"_blank\">http://${PUBLIC_IP}:${port}/</a> <span style=\"color:#10b981;font-size:0.75rem;\">（CSS 正常）</span>"
+                extra_links=" <span style=\"color:#f87171;font-size:0.75rem;\">（CSS 错乱）</span><br><a href=\"http://${PUBLIC_IP}:${port}/\" class=\"link\" target=\"_blank\">http://${PUBLIC_IP}:${port}/</a> <span style=\"color:#10b981;font-size:0.75rem;\">（CSS 正常）</span>"
             elif [[ "$name" == "couchdb" ]]; then
                 extra_links="<br><span style=\"color:#94a3b8;font-size:0.75rem;\">控制台: </span><a href=\"${base_url}couchdb/_utils/\" class=\"link\" target=\"_blank\">${base_url}couchdb/_utils/</a>"
             fi
@@ -1045,8 +1044,7 @@ write_nav_html() {
             local extra_links=""
             if [[ "$name" == "st" ]]; then
                 name="SillyTavern"
-                note=" <span style=\"color:#f87171;font-size:0.75rem;\">（HTTPS 代理下 CSS 错乱）</span>"
-                extra_links="<br><span style=\"color:#94a3b8;font-size:0.75rem;\">直连: </span><a href=\"http://${PUBLIC_IP}:${port}/\" class=\"link\" target=\"_blank\">http://${PUBLIC_IP}:${port}/</a> <span style=\"color:#10b981;font-size:0.75rem;\">（CSS 正常）</span>"
+                extra_links=" <span style=\"color:#f87171;font-size:0.75rem;\">（CSS 错乱）</span><br><a href=\"http://${PUBLIC_IP}:${port}/\" class=\"link\" target=\"_blank\">http://${PUBLIC_IP}:${port}/</a> <span style=\"color:#10b981;font-size:0.75rem;\">（CSS 正常）</span>"
             elif [[ "$name" == "couchdb" ]]; then
                 extra_links="<br><span style=\"color:#94a3b8;font-size:0.75rem;\">控制台: </span><a href=\"${base}couchdb/_utils/\" class=\"link\" target=\"_blank\">${base}couchdb/_utils/</a>"
             fi
