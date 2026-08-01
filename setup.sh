@@ -338,29 +338,32 @@ issue_ip_cert() {
 
     mkdir -p /var/www/html
 
-    if [[ -f "$CERT_FILE" ]] && [[ -f "$KEY_FILE" ]]; then
-        info "证书已存在，检查续期 ..."
-        ${acme_sh} --cron -d "${PUBLIC_IP}" 2>/dev/null || true
-    else
-        info "申请 Let's Encrypt IP 证书（webroot 模式）..."
-        ${acme_sh} --issue \
-            --server letsencrypt \
-            -d "${PUBLIC_IP}" \
-            --certificate-profile shortlived \
-            --webroot /var/www/html \
-            --force || {
-                stop_temp_caddy
-                error "证书申请失败，常见原因："
-                error "1. Let's Encrypt 频率限制（同一 IP 7 天内最多 5 次）"
-                error "2. 端口 80 被防火墙阻挡（安全组/iptables 需放行）"
-                error "3. 公网 IP ${PUBLIC_IP} 并非本机公网 IP"
-                error "4. /var/www/html 目录不可写"
-                exit 1
-            }
-        info "证书申请成功！"
+    info "申请 Let's Encrypt IP 证书（webroot 模式）..."
+    ${acme_sh} --issue \
+        --server letsencrypt \
+        -d "${PUBLIC_IP}" \
+        --certificate-profile shortlived \
+        --webroot /var/www/html \
+        --ecc \
+        --force || {
+            stop_temp_caddy
+            error "证书申请失败，常见原因："
+            error "1. Let's Encrypt 频率限制（同一 IP 7 天内最多 5 次）"
+            error "2. 端口 80 被防火墙阻挡（安全组/iptables 需放行）"
+            error "3. 公网 IP ${PUBLIC_IP} 并非本机公网 IP"
+            error "4. /var/www/html 目录不可写"
+            exit 1
+        }
+
+    if ! openssl x509 -checkend 0 -noout -in "$CERT_FILE" 2>/dev/null; then
+        stop_temp_caddy
+        error "证书申请命令已结束，但未生成有效证书: ${CERT_FILE}"
+        exit 1
     fi
+    info "证书申请成功！"
 
     ${acme_sh} --install-cert -d "${PUBLIC_IP}" \
+        --ecc \
         --reloadcmd "systemctl reload caddy 2>/dev/null || caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || true"
 }
 
@@ -476,16 +479,20 @@ ROUTE
     caddy fmt --overwrite "$caddyfile" 2>/dev/null || true
 }
 
-# ---- 证书续期 cron（仅 IP）----
-setup_cron_renew_ip() {
-    info "配置 IP 证书自动续期 ..."
+# ---- acme.sh 证书续期 cron ----
+setup_cron_renew_acme() {
+    info "配置 acme.sh 证书自动续期 ..."
     local acme_sh="${HOME}/.acme.sh/acme.sh"
-    if ! (crontab -l 2>/dev/null | grep -q "acme.sh.*--cron.*${PUBLIC_IP}"); then
-        (crontab -l 2>/dev/null || true; echo "0 3 * * * ${acme_sh} --cron -d ${PUBLIC_IP} >> /var/log/caddy/acme-renew.log 2>&1") | crontab -
-        info "已添加续期 crontab（每日 3:00 检查 IP 证书）"
-    else
-        info "续期 crontab 已存在"
-    fi
+    local cron_line="0 3 * * * ${acme_sh} --cron --home ${HOME}/.acme.sh >> /var/log/caddy/acme-renew.log 2>&1"
+    local current_cron
+
+    current_cron="$(crontab -l 2>/dev/null || true)"
+    {
+        printf '%s\n' "$current_cron" | awk \
+            '!(index($0, "acme.sh") && index($0, "--cron"))'
+        printf '%s\n' "$cron_line"
+    } | sed '/^[[:space:]]*$/d' | crontab -
+    info "已配置唯一续期 crontab（每日 3:00 检查全部 acme.sh 证书）"
 }
 
 # ---- 启动 Caddy ----
@@ -1205,7 +1212,7 @@ mode_ip() {
 
     gen_root_html "https://${PUBLIC_IP}"
     configure_caddy "ip"
-    setup_cron_renew_ip
+    setup_cron_renew_acme
     start_caddy "https://${PUBLIC_IP}"
     print_summary "ip"
 }

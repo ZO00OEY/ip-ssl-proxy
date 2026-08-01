@@ -4,6 +4,15 @@
 
 无需 ICP 备案即可用 IP 证书加密通信；有域名时可切换 Caddy 自动签发证书模式。
 
+## 更新说明（2026-08-01）
+
+- 修复 IP 短期证书过期后只尝试静默续期、未真正重新签发的问题。
+- 证书过期或剩余有效期不足两天时，强制重新签发并验证新证书有效性。
+- 明确使用 ECC 证书，并在安装证书后自动重新加载 Caddy。
+- 合并 acme.sh 安装程序和历史脚本生成的重复 cron，统一为每天 03:00 执行的唯一全局续期任务。
+- 续期输出统一写入 `/var/log/caddy/acme-renew.log`，方便排查失败原因。
+- 重复运行安装脚本不会再次追加证书续期任务。
+
 ---
 
 ## 快速开始
@@ -86,6 +95,8 @@ Caddy 自动为域名签发和续期 SSL 证书，服务通过 `https://域名/�
 |------|---------|---------|------|
 | IP 证书 | acme.sh webroot | `/root/.acme.sh/<IP>_ecc/fullchain.cer`<br>`/root/.acme.sh/<IP>_ecc/<IP>.key` | crontab 每日 3:00<br>日志: `/var/log/caddy/acme-renew.log` |
 | 域名证书 | Caddy 自动签发 | `/root/.local/share/caddy/certificates/`<br>`acme-v02.api.letsencrypt.org-directory/<域名>/` | Caddy 自动续期 |
+
+IP 证书是有效期较短的 `shortlived` 证书。重新运行脚本时会检查有效期；证书已过期或不足两天时会强制重新签发。脚本会清理 acme.sh 安装程序及本项目遗留的重复续期任务，再写入唯一一条每日 3:00 执行、带日志的全局 acme.sh 续期任务。该任务会覆盖 acme.sh 管理的全部证书。
 
 ---
 
