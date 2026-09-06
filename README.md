@@ -4,15 +4,6 @@
 
 无需 ICP 备案即可用 IP 证书加密通信；有域名时可切换 Caddy 自动签发证书模式。
 
-## 更新说明（2026-08-01）
-
-- 修复 IP 短期证书过期后只尝试静默续期、未真正重新签发的问题。
-- 证书过期或剩余有效期不足两天时，强制重新签发并验证新证书有效性。
-- 明确使用 ECC 证书，并在安装证书后自动重新加载 Caddy。
-- 合并 acme.sh 安装程序和历史脚本生成的重复 cron，统一为每天 03:00 执行的唯一全局续期任务。
-- 续期输出统一写入 `/var/log/caddy/acme-renew.log`，方便排查失败原因。
-- 重复运行安装脚本不会再次追加证书续期任务。
-
 ---
 
 ## 快速开始
@@ -34,6 +25,7 @@ cd ip-ssl-proxy && bash setup.sh
   1  拉取IP证书  [二选一]
   2  拉取域名证书  [二选一]
   3  添加服务（自动匹配当前配置）
+  5  CPA 反代安装与管理
   0  退出
 
 ----------------------------------------
@@ -96,8 +88,6 @@ Caddy 自动为域名签发和续期 SSL 证书，服务通过 `https://域名/�
 | IP 证书 | acme.sh webroot | `/root/.acme.sh/<IP>_ecc/fullchain.cer`<br>`/root/.acme.sh/<IP>_ecc/<IP>.key` | crontab 每日 3:00<br>日志: `/var/log/caddy/acme-renew.log` |
 | 域名证书 | Caddy 自动签发 | `/root/.local/share/caddy/certificates/`<br>`acme-v02.api.letsencrypt.org-directory/<域名>/` | Caddy 自动续期 |
 
-IP 证书是有效期较短的 `shortlived` 证书。重新运行脚本时会检查有效期；证书已过期或不足两天时会强制重新签发。脚本会清理 acme.sh 安装程序及本项目遗留的重复续期任务，再写入唯一一条每日 3:00 执行、带日志的全局 acme.sh 续期任务。该任务会覆盖 acme.sh 管理的全部证书。
-
 ---
 
 ## 自定义服务
@@ -129,6 +119,26 @@ SERVICES="/app1/|3000,/app2/|192.168.1.10|4000" bash setup.sh
 ---
 
 ## 日常管理
+
+### CPA（CLIProxyAPI）
+
+CPA 默认安装到 `/opt/cliproxyapi`，配置在 `/etc/cliproxyapi/config.yaml`，认证目录在 `/var/lib/cliproxyapi/auth-dir`，由 root 用户级 systemd 管理。安装前准备固定版本的 Linux 二进制 URL 和 SHA256：
+
+```bash
+export CPA_DOWNLOAD_URL='https://固定版本下载地址/cli-proxy-api-linux-amd64.tar.gz'
+export CPA_SHA256='64位SHA256校验值'
+bash setup.sh cpa install
+```
+
+首次安装只生成配置模板，不会伪造或上传上游凭证。编辑配置时必须把 `api-keys` 中的占位值替换成你手动收集的客户端 Key，并设置独立的 `remote-management.secret-key`；完成 OAuth 登录后，再接入现有 Caddy：
+
+```bash
+bash setup.sh cpa status
+bash setup.sh cpa route
+bash setup.sh cpa backup
+```
+
+公网只暴露 `/cpa/v1` API，并在 Caddy 层拒绝 `/cpa/v1/management*`；管理页面默认保持本机访问，需管理时使用 SSH 隧道到 `127.0.0.1:8317`。升级、日志、启停和保留数据卸载分别为 `cpa upgrade`、`cpa logs`、`cpa restart`、`cpa uninstall`。
 
 | 操作 | 命令 |
 |------|------|

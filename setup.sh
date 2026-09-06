@@ -29,6 +29,9 @@ DEFAULT_SERVICES=(
 
 DOMAIN="${DOMAIN:-}"
 PUBLIC_IP="${PUBLIC_IP:-}"
+TEMP_CADDY_OWNED=0
+TEMP_CADDY_PID=""
+TEMP_CADDY_ADMIN_ADDR=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUPPORTED_OS=false
 OS_ID="unknown"
@@ -82,6 +85,12 @@ YELLOW='\033[1;33m'
 TITLE_YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
+
+# CPA 模块只定义函数，不在加载时安装、启动或修改系统。
+if [[ -f "${SCRIPT_DIR}/modules/cpa.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${SCRIPT_DIR}/modules/cpa.sh"
+fi
 
 info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
@@ -149,7 +158,9 @@ print_route_help() {
 
 # ---- 清理函数（Ctrl+C 时停止临时 Caddy）----
 cleanup() {
-    stop_temp_caddy 2>/dev/null || true
+    if [[ "${TEMP_CADDY_OWNED:-0}" == "1" ]]; then
+        stop_temp_caddy 2>/dev/null || true
+    fi
     restore_caddy_after_challenge 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
@@ -702,40 +713,27 @@ port80_is_busy() {
 
 prepare_caddy_for_challenge() {
     FORMAL_CADDY_WAS_ACTIVE=0
-    CHALLENGE_ACTIVE=1
+    CHALLENGE_ACTIVE=0
 
+    # 正式 Caddy 已负责 ACME webroot 时直接复用，不停止其服务。
     if is_caddy_service_active; then
         FORMAL_CADDY_WAS_ACTIVE=1
-        systemctl stop caddy 2>/dev/null || true
+        info "正式 Caddy 已运行，复用端口 80 提供 ACME 验证"
+        return 0
     fi
 
-    caddy stop 2>/dev/null || true
-    sleep 1
-
+    # 其他手动 Caddy 或服务占用端口时拒绝继续，避免误杀进程。
+    if pgrep -x caddy &>/dev/null; then
+        warn "检测到非 systemd 管理的 Caddy；不会强制停止，请先处理端口 80 冲突"
+        return 1
+    fi
     if port80_is_busy; then
-        warn "端口 80 被占用，准备强制关闭以下进程:"
+        error "端口 80 已被占用；不会停止或强制杀死占用者，请先处理端口冲突"
         port80_processes >&2 || true
+        return 1
     fi
 
-    if port80_is_busy && command_exists fuser; then
-        fuser -k 80/tcp 2>/dev/null || true
-        sleep 1
-    fi
-
-    if port80_is_busy; then
-        warn "端口 80 仍被占用，再次强制关闭:"
-        port80_processes >&2 || true
-        fuser -k 80/tcp 2>/dev/null || true
-        sleep 1
-    fi
-
-    if port80_is_busy; then
-        error "端口 80 占用进程未能被关闭:"
-        port80_processes >&2 || true
-        exit 1
-    elif command_exists fuser; then
-        info "端口 80 占用进程已强制关闭"
-    fi
+    CHALLENGE_ACTIVE=1
 }
 
 restore_caddy_after_challenge() {
@@ -749,34 +747,61 @@ restore_caddy_after_challenge() {
 }
 
 start_temp_caddy() {
-    prepare_caddy_for_challenge
+    prepare_caddy_for_challenge || return $?
+    if [[ "${CHALLENGE_ACTIVE:-0}" != "1" ]]; then
+        return 0
+    fi
 
     info "启动临时 Caddy（端口 80，用于 Let's Encrypt 验证）..."
     mkdir -p /var/www/html
 
-    cat > /etc/caddy/Caddyfile.temp <<'EOF'
+    local admin_port
+    admin_port=$((20000 + RANDOM % 10000))
+    TEMP_CADDY_ADMIN_ADDR="127.0.0.1:${admin_port}"
+    cat > /etc/caddy/Caddyfile.temp <<EOF
+{
+    admin ${TEMP_CADDY_ADMIN_ADDR}
+}
 :80 {
     root * /var/www/html
     file_server
 }
 EOF
 
-    caddy start --config /etc/caddy/Caddyfile.temp --adapter caddyfile 2>/dev/null || {
+    TEMP_CADDY_OWNED=0
+    if caddy start --config /etc/caddy/Caddyfile.temp --adapter caddyfile 2>/dev/null; then
+        TEMP_CADDY_OWNED=1
+    else
         caddy run --config /etc/caddy/Caddyfile.temp --adapter caddyfile > /dev/null 2>&1 &
         TEMP_CADDY_PID=$!
-    }
+        sleep 2
+        if kill -0 "$TEMP_CADDY_PID" 2>/dev/null; then
+            TEMP_CADDY_OWNED=1
+        else
+            rm -f /etc/caddy/Caddyfile.temp
+            TEMP_CADDY_ADMIN_ADDR=""
+            CHALLENGE_ACTIVE=0
+            error "临时 Caddy 启动失败"
+            return 1
+        fi
+    fi
     sleep 2
     info "临时 Caddy 已启动"
 }
 
 stop_temp_caddy() {
+    [[ "${TEMP_CADDY_OWNED:-0}" == "1" ]] || return 0
     if [[ -n "${TEMP_CADDY_PID:-}" ]]; then
         kill "$TEMP_CADDY_PID" 2>/dev/null || true
         wait "$TEMP_CADDY_PID" 2>/dev/null || true
         TEMP_CADDY_PID=""
     fi
-    caddy stop --config /etc/caddy/Caddyfile.temp 2>/dev/null || true
+    if [[ -n "${TEMP_CADDY_ADMIN_ADDR:-}" ]]; then
+        caddy stop --address "$TEMP_CADDY_ADMIN_ADDR" 2>/dev/null || true
+    fi
     rm -f /etc/caddy/Caddyfile.temp
+    TEMP_CADDY_OWNED=0
+    TEMP_CADDY_ADMIN_ADDR=""
 }
 
 # ---- 申请 IP 证书 ----
@@ -1129,17 +1154,20 @@ start_caddy() {
     ensure_caddy_root
 
     if command -v systemctl &>/dev/null && systemctl cat caddy.service &>/dev/null; then
-        # 先杀手动运行的 Caddy（如果有），避免端口冲突
-        pkill -x caddy 2>/dev/null || true
-        sleep 1
+        if pgrep -x caddy &>/dev/null && ! is_caddy_service_active; then
+            error "检测到非 systemd 管理的 Caddy；不会强制停止，请先处理现有实例"
+            return 1
+        fi
         systemctl enable caddy 2>/dev/null || true
         systemctl restart caddy 2>/dev/null || systemctl start caddy 2>/dev/null || {
             error "systemctl 启动 Caddy 失败，请检查: journalctl -u caddy -n 50"
             return 1
         }
     else
-        caddy stop 2>/dev/null || true
-        sleep 1
+        if pgrep -x caddy &>/dev/null; then
+            error "检测到非 systemd 管理的 Caddy；不会强制停止，请先处理现有实例"
+            return 1
+        fi
         nohup caddy run --config /etc/caddy/Caddyfile --adapter caddyfile > /var/log/caddy/caddy.log 2>&1 &
         info "Caddy 已后台启动 (PID: $!)"
     fi
@@ -3008,7 +3036,6 @@ HTML
 
 reload_caddy() {
     info "重载 Caddy..."
-    local ok=true
     # 确保日志目录权限正确
     mkdir -p /var/log/caddy
     if id -u caddy &>/dev/null; then
@@ -3018,33 +3045,30 @@ reload_caddy() {
     ensure_caddy_root
 
     if command -v systemctl &>/dev/null && systemctl is-active caddy &>/dev/null; then
-        systemctl reload caddy 2>&1 || systemctl restart caddy 2>&1 || ok=false
+        if systemctl reload caddy 2>&1; then
+            info "Caddy 重载完成"
+            return 0
+        fi
+        warn "Caddy reload 失败，尝试受控重启..."
+        if systemctl restart caddy 2>&1 && systemctl is-active caddy &>/dev/null; then
+            info "Caddy 重启完成"
+            return 0
+        fi
+        error "Caddy 重载和受控重启均失败，请检查: journalctl -u caddy -n 50"
+        return 1
     else
         if caddy reload --config /etc/caddy/Caddyfile 2>&1; then
-            :
-        else
-            warn "caddy reload 失败，强制重启 Caddy..."
-            pkill -x caddy 2>/dev/null || true
-            sleep 1
-            if command -v systemctl &>/dev/null && systemctl cat caddy.service &>/dev/null 2>&1; then
-                systemctl start caddy 2>&1 || ok=false
-                sleep 1
-                if ! systemctl is-active caddy &>/dev/null; then
-                    error "Caddy 启动后异常退出，请检查: journalctl -u caddy -n 30 --no-pager"
-                    ok=false
-                fi
-            else
-                nohup caddy run --config /etc/caddy/Caddyfile --adapter caddyfile > /var/log/caddy/caddy.log 2>&1 &
-                sleep 2
-            fi
+            info "Caddy 重载完成"
+            return 0
         fi
+        warn "caddy reload 失败，尝试启动受管服务..."
+        if command -v systemctl &>/dev/null && systemctl cat caddy.service &>/dev/null 2>&1 && systemctl start caddy 2>&1 && systemctl is-active caddy &>/dev/null; then
+            info "Caddy 启动完成"
+            return 0
+        fi
+        error "Caddy 启动失败，请手动检查"
+        return 1
     fi
-    if $ok; then
-        info "完成！"
-        return 0
-    fi
-    error "Caddy 启动失败，请手动检查"
-    return 1
 }
 
 # ---- 已删除默认服务管理 ----
@@ -3559,15 +3583,21 @@ show_menu() {
     echo ""
     echo "  1  初始化环境（$(status_caddy_init)）"
     echo "  2  域名 / SSL 证书 / 导航页"
+    echo "  3  CPA 反代安装与管理"
     echo "  0  退出"
     echo ""
-    echo -n "  请输入 [1/2/0]: "
+    echo -n "  请输入 [1/2/3/0]: "
 }
 
 # ============================================================
 # Main
 # ============================================================
 main() {
+    if [[ "${1:-}" == "cpa" ]]; then
+        shift
+        cpa_dispatch "${1:-menu}" "${@:2}"
+        return $?
+    fi
     runtime_preflight
     while true; do
         show_menu
@@ -3582,6 +3612,7 @@ main() {
         case "$CHOICE" in
             1) mode_init_environment ;;
             2) mode_access_menu ;;
+            3) cpa_menu ;;
             0|q|Q) info "已退出" ; exit 0 ;;
             *) error "无效选项，请输入 1、2 或 0" ;;
         esac
