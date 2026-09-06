@@ -1028,6 +1028,9 @@ set -eu
 ACME_SH="${acme_sh}"
 TEMP_CADDYFILE="/etc/caddy/Caddyfile.temp"
 FORMAL_WAS_ACTIVE=0
+TEMP_CADDY_OWNED=0
+TEMP_CADDY_PID=""
+TEMP_CADDY_ADMIN_ADDR=""
 
 command_exists() { command -v "\$1" >/dev/null 2>&1; }
 port80_processes() {
@@ -1037,7 +1040,15 @@ port80_processes() {
 }
 port80_is_busy() { [ -n "\$(port80_processes)" ]; }
 cleanup() {
-    caddy stop --config "\$TEMP_CADDYFILE" >/dev/null 2>&1 || true
+    if [ "\$TEMP_CADDY_OWNED" = "1" ]; then
+        if [ -n "\$TEMP_CADDY_PID" ]; then
+            kill "\$TEMP_CADDY_PID" >/dev/null 2>&1 || true
+            wait "\$TEMP_CADDY_PID" >/dev/null 2>&1 || true
+        fi
+        if [ -n "\$TEMP_CADDY_ADMIN_ADDR" ]; then
+            caddy stop --address "\$TEMP_CADDY_ADMIN_ADDR" >/dev/null 2>&1 || true
+        fi
+    fi
     rm -f "\$TEMP_CADDYFILE"
     if [ "\$FORMAL_WAS_ACTIVE" = "1" ] && command_exists systemctl && systemctl cat caddy.service >/dev/null 2>&1; then
         systemctl start caddy >/dev/null 2>&1 || true
@@ -1047,48 +1058,46 @@ trap cleanup EXIT INT TERM
 
 if command_exists systemctl && systemctl is-active --quiet caddy 2>/dev/null; then
     FORMAL_WAS_ACTIVE=1
-    systemctl stop caddy >/dev/null 2>&1 || true
-fi
-caddy stop >/dev/null 2>&1 || true
-sleep 1
+    echo "正式 Caddy 已运行，复用端口 80 提供 ACME 验证"
+else
+    if command_exists pgrep && pgrep -x caddy >/dev/null 2>&1; then
+        echo "检测到非 systemd 管理的 Caddy；不会强制停止，请先处理端口 80 冲突"
+        exit 1
+    fi
+    if port80_is_busy; then
+        echo "端口 80 已被占用；不会停止或强制杀死占用者"
+        port80_processes || true
+        exit 1
+    fi
 
-if port80_is_busy; then
-    echo "端口 80 被占用，准备强制关闭以下进程:"
-    port80_processes || true
-fi
-
-if port80_is_busy && command_exists fuser; then
-    fuser -k 80/tcp >/dev/null 2>&1 || true
-    sleep 1
-fi
-
-if port80_is_busy; then
-    echo "端口 80 仍被占用，再次强制关闭:"
-    port80_processes || true
-    fuser -k 80/tcp >/dev/null 2>&1 || true
-    sleep 1
-fi
-
-if port80_is_busy; then
-    echo "端口 80 占用进程未能被关闭:"
-    port80_processes || true
-    exit 1
-elif command_exists fuser; then
-    echo "端口 80 占用进程已强制关闭"
-fi
-
-mkdir -p /var/www/html
-cat > "\$TEMP_CADDYFILE" <<'CADDYEOF'
+    TEMP_CADDY_ADMIN_ADDR="127.0.0.1:\$((20000 + RANDOM % 10000))"
+    mkdir -p /var/www/html
+    cat > "\$TEMP_CADDYFILE" <<'CADDYEOF'
+{
+    admin TEMP_ADMIN_PLACEHOLDER
+}
 :80 {
     root * /var/www/html
     file_server
 }
 CADDYEOF
+    sed -i "s/TEMP_ADMIN_PLACEHOLDER/\$TEMP_CADDY_ADMIN_ADDR/" "\$TEMP_CADDYFILE"
 
-caddy start --config "\$TEMP_CADDYFILE" --adapter caddyfile >/dev/null 2>&1 || {
-    caddy run --config "\$TEMP_CADDYFILE" --adapter caddyfile >/tmp/ip-ssl-proxy-renew-caddy.log 2>&1 &
+    if caddy start --config "\$TEMP_CADDYFILE" --adapter caddyfile >/dev/null 2>&1; then
+        TEMP_CADDY_OWNED=1
+    else
+        caddy run --config "\$TEMP_CADDYFILE" --adapter caddyfile >/tmp/ip-ssl-proxy-renew-caddy.log 2>&1 &
+        TEMP_CADDY_PID=\$!
+        sleep 2
+        if kill -0 "\$TEMP_CADDY_PID" >/dev/null 2>&1; then
+            TEMP_CADDY_OWNED=1
+        else
+            echo "临时 Caddy 启动失败"
+            exit 1
+        fi
+    fi
     sleep 2
-}
+fi
 
 "\$ACME_SH" --cron --home "${HOME}/.acme.sh"
 RENEWEOF
