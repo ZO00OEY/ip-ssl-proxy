@@ -16,6 +16,10 @@ CPA_STATE_DIR="${CPA_STATE_DIR:-/etc/ip-ssl-proxy/cpa}"
 CPA_STATE_FILE="${CPA_STATE_FILE:-${CPA_STATE_DIR}/state.env}"
 CPA_PORT="${CPA_PORT:-8317}"
 CPA_CADDYFILE="${CPA_CADDYFILE:-/etc/caddy/Caddyfile}"
+CPA_RELEASE_REPO="${CPA_RELEASE_REPO:-router-for-me/CLIProxyAPI}"
+CPA_RELEASE_TAG="${CPA_RELEASE_TAG:-}"
+CPA_RELEASE_API="${CPA_RELEASE_API:-}"
+CPA_ASSET_FLAVOR="${CPA_ASSET_FLAVOR:-standard}"
 
 cpa_paths() {
     CPA_CONFIG_FILE="${CPA_CONFIG_DIR}/config.yaml"
@@ -234,6 +238,101 @@ cpa_validate_zip_members() {
     return 0
 }
 
+cpa_release_arch() {
+    local arch="${CPA_ARCH:-$(uname -m)}"
+    case "$arch" in
+        x86_64|amd64) printf 'amd64\n' ;;
+        aarch64|arm64) printf 'aarch64\n' ;;
+        *) cpa_log_error "不支持的 CPA Linux 架构: $arch（仅支持 amd64/aarch64）"; return 1 ;;
+    esac
+}
+
+cpa_resolve_release() {
+    local url="${CPA_DOWNLOAD_URL:-}" sha="${CPA_SHA256:-}" api tag version arch json checksums
+    local standard_asset no_plugin_asset asset candidate
+    local stage="" found_sha=""
+
+    # 提供完整固定值时不访问 Releases API，便于离线或可审计部署。
+    if [[ -n "$url" || -n "$sha" ]]; then
+        [[ -n "$url" && -n "$sha" ]] || {
+            cpa_log_error "CPA_DOWNLOAD_URL 与 CPA_SHA256 必须同时设置；或同时留空以自动 GET 最新版本"
+            return 1
+        }
+        return 0
+    fi
+
+    command -v curl >/dev/null 2>&1 || { cpa_log_error "缺少 curl，无法 GET CPA Releases API"; return 1; }
+    arch="$(cpa_release_arch)" || return 1
+    if [[ -n "${CPA_RELEASE_TAG:-}" && "${CPA_RELEASE_TAG}" != "latest" ]]; then
+        [[ "${CPA_RELEASE_TAG}" =~ ^v?[0-9][A-Za-z0-9._-]*$ ]] || {
+            cpa_log_error "CPA_RELEASE_TAG 格式无效: ${CPA_RELEASE_TAG}"; return 1;
+        }
+        api="${CPA_RELEASE_API:-https://api.github.com/repos/${CPA_RELEASE_REPO}/releases/tags/${CPA_RELEASE_TAG}}"
+    else
+        api="${CPA_RELEASE_API:-https://api.github.com/repos/${CPA_RELEASE_REPO}/releases/latest}"
+    fi
+    [[ "$api" =~ ^https://[^[:space:]]+$ ]] || {
+        cpa_log_error "CPA_RELEASE_API 必须是 HTTPS URL"; return 1;
+    }
+
+    stage="$(mktemp -d "${TMPDIR:-/tmp}/cpa-release.XXXXXX")" || return 1
+    json="$stage/release.json"
+    checksums="$stage/checksums.txt"
+    cpa_log_info "GET ${api}"
+    if ! curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 \
+        -H 'Accept: application/vnd.github+json' -H 'User-Agent: ip-ssl-proxy' \
+        "$api" -o "$json"; then
+        rm -rf "$stage"
+        cpa_log_error "CPA Releases API GET 失败"
+        return 1
+    fi
+    tag="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$json" | head -n 1)"
+    [[ "$tag" =~ ^v?[0-9][A-Za-z0-9._-]*$ ]] || {
+        rm -rf "$stage"
+        cpa_log_error "Releases API 未返回有效 tag_name"
+        return 1
+    }
+    version="${tag#v}"
+    standard_asset="CLIProxyAPI_${version}_linux_${arch}.tar.gz"
+    no_plugin_asset="CLIProxyAPI_${version}_linux_${arch}_no-plugin.tar.gz"
+    if [[ "${CPA_ASSET_FLAVOR,,}" == "no-plugin" ]]; then
+        candidates=("$no_plugin_asset" "$standard_asset" "cli-proxy-api_linux_${arch}_no-plugin.tar.gz" "cli-proxy-api_linux_${arch}.tar.gz")
+    else
+        candidates=("$standard_asset" "$no_plugin_asset" "cli-proxy-api_linux_${arch}.tar.gz" "cli-proxy-api_linux_${arch}_no-plugin.tar.gz")
+    fi
+
+    cpa_log_info "GET https://github.com/${CPA_RELEASE_REPO}/releases/download/${tag}/checksums.txt"
+    if ! curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 \
+        -H 'User-Agent: ip-ssl-proxy' \
+        "https://github.com/${CPA_RELEASE_REPO}/releases/download/${tag}/checksums.txt" -o "$checksums"; then
+        rm -rf "$stage"
+        cpa_log_error "CPA checksums.txt GET 失败"
+        return 1
+    fi
+    for candidate in "${candidates[@]}"; do
+        found_sha="$(awk -v target="$candidate" '
+            { name=$NF; sub(/^.*\//, "", name); if (name == target && length($1) == 64 && $1 ~ /^[0-9A-Fa-f]+$/) { print tolower($1); exit } }
+        ' "$checksums")"
+        if [[ -n "$found_sha" ]]; then
+            asset="$candidate"
+            break
+        fi
+    done
+    if [[ -z "${asset:-}" || -z "$found_sha" ]]; then
+        rm -rf "$stage"
+        cpa_log_error "checksums.txt 中没有当前架构的 CPA Linux 资产"
+        return 1
+    fi
+    CPA_RELEASE_TAG="$tag"
+    CPA_RELEASE_VERSION="$version"
+    CPA_ASSET_NAME="$asset"
+    CPA_DOWNLOAD_URL="https://github.com/${CPA_RELEASE_REPO}/releases/download/${tag}/${asset}"
+    CPA_SHA256="$found_sha"
+    export CPA_RELEASE_TAG CPA_RELEASE_VERSION CPA_ASSET_NAME CPA_DOWNLOAD_URL CPA_SHA256
+    rm -rf "$stage"
+    cpa_log_info "已选择 CPA ${tag}: ${asset}"
+}
+
 cpa_download() {
     local target="${1:-$CPA_BINARY}"
     local url="${CPA_DOWNLOAD_URL:-}" sha="${CPA_SHA256:-}"
@@ -424,6 +523,7 @@ cpa_install() {
         cpa_log_error "发现未接管的 CPA 二进制: $CPA_BINARY；为避免覆盖请先迁移或移走它"
         return 1
     fi
+    cpa_resolve_release || return 1
     install -d -m 755 "$CPA_INSTALL_DIR"
     staged="$(mktemp "$CPA_INSTALL_DIR/.cli-proxy-api.install.XXXXXX")" || return 1
     rm -f "$staged"
@@ -760,6 +860,7 @@ cpa_upgrade() {
     cpa_paths
     cpa_validate_layout || return 1
     cpa_installed || { cpa_log_error "CPA 尚未由本工具管理"; return 1; }
+    cpa_resolve_release || return 1
     local staged old stamp
     staged="$(mktemp "${CPA_INSTALL_DIR}/.cli-proxy-api.new.XXXXXX")" || return 1
     rm -f "$staged"
