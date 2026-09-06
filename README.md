@@ -121,13 +121,15 @@ SERVICES="/app1/|3000,/app2/|192.168.1.10|4000" bash setup.sh
 
 ### CPA（CLIProxyAPI）
 
-CPA 默认安装到 `/opt/cliproxyapi`，配置在 `/etc/cliproxyapi/config.yaml`，认证目录在 `/var/lib/cliproxyapi/auth-dir`，由 root 用户级 systemd 管理。默认会 GET GitHub Releases API，自动选择当前 Linux 架构的最新版本，并从 `checksums.txt` 取得 SHA256：
+CPA 默认安装到 `/opt/cliproxyapi`，配置在 `/etc/cliproxyapi/config.yaml`，认证目录在 `/var/lib/cliproxyapi/auth-dir`，由 root 用户级 systemd 管理。安装前准备教程指定版本的 Linux 二进制 URL 和 SHA256：
 
 ```bash
+export CPA_DOWNLOAD_URL='https://固定版本下载地址/cli-proxy-api-linux-amd64.tar.gz'
+export CPA_SHA256='64位SHA256校验值'
 bash setup.sh cpa install
 ```
 
-如需可审计的固定版本，可同时设置 `CPA_DOWNLOAD_URL` 和 `CPA_SHA256`，脚本将跳过 Releases API；只设置其中一个会直接报错。
+每次更新版本时，先按教程更新这两个值，再通过 Git 拉取脚本；脚本本身不会查询或自动更新上游版本。
 
 首次安装只生成配置模板，不会伪造或上传上游凭证。编辑配置时必须把 `api-keys` 中的占位值替换成你手动收集的客户端 Key，并设置独立的 `remote-management.secret-key`；完成 OAuth 登录后，再接入现有 Caddy：
 
